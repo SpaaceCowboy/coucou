@@ -147,7 +147,7 @@ export function handleAgentEvent(island: Island, payload: AgentEvent) {
   }
 
   const name = payload.type;
-  if (["session_started", "activity", "command", "file_edit", "session_completed", "session_ended", "error", "approval_requested"].includes(name)) {
+  if (["session_started", "activity", "command", "file_edit", "session_completed", "session_ended", "error", "approval_requested", "waiting"].includes(name)) {
     const settle = settleTimers.get(id);
     if (settle != null) {
       window.clearTimeout(settle);
@@ -159,23 +159,35 @@ export function handleAgentEvent(island: Island, payload: AgentEvent) {
   const projectName = aliasProjectName(raw || "Session");
   const focused = State.focusId === id;
 
-  /** Alerts force the island open; work events only reveal the compact island. */
-  const surface = (view: Parameters<Island["alert"]>[0], isAlert: boolean) => {
-    if (State.mode === "expanded") {
-      if (isAlert) island.setView(view);
-    } else if (isAlert) {
-      island.alert(view);
-    } else if (State.mode === "hidden") {
+  // Routine activity updates the ticker quietly. Only attention events surface.
+  const attention = (view: Parameters<Island["alert"]>[0], badge: "approval" | "finished" | "error") => {
+    if (State.pendingApproval) {
+      if (id !== "integration_claude") State.setPillBadge(id, badge);
+      return; // Keep the existing Claude decision card available until answered.
+    }
+    if (focused) {
+      if (State.mode === "expanded") island.setView(view);
+      else island.alert(view);
+    } else {
+      State.setPillBadge(id, badge);
       island.reveal();
     }
+  };
+  const waiting = (state: "question" | "ratelimit") => {
+    const settle = settleTimers.get(id);
+    if (settle != null) window.clearTimeout(settle);
+    settleTimers.delete(id);
+    upsert(id, payload, projectName, cwd);
+    State.updateTask(id, state);
+    State.appendStep(id, payload.message || "Waiting for your input in the agent app.");
+    Sound.play(state === "ratelimit" ? "rate" : "approval");
+    attention("question", "approval");
   };
 
   switch (name) {
     case "session_started":
       upsert(id, payload, projectName, cwd);
       if (payload.source === "codex") State.updateTask(id, "thinking");
-      surface("overview", false);
-      Sound.play("work");
       break;
 
     case "activity":
@@ -187,7 +199,6 @@ export function handleAgentEvent(island: Island, payload: AgentEvent) {
       State.setPillBadge(id, null);
       if (payload.message) State.appendStep(id, payload.message.slice(0, 60));
       else if (payload.tool_name) State.appendStep(id, stepLabel(payload.tool_name, payload.tool_input ?? {}));
-      surface("overview", false);
       break;
     }
 
@@ -195,22 +206,23 @@ export function handleAgentEvent(island: Island, payload: AgentEvent) {
       const message = payload.message ?? "";
       const lower = message.toLowerCase();
       if (lower.includes("rate limit") || lower.includes("limite d")) {
-        State.updateTask(id, "ratelimit");
-        Sound.play("rate");
+        waiting("ratelimit");
       } else if (message.endsWith("?")) {
-        State.updateTask(id, "question");
-        State.appendStep(id, message);
+        waiting("question");
       }
       break;
     }
+
+    case "waiting":
+      waiting("question");
+      break;
 
     case "session_completed":
       upsert(id, payload, projectName, cwd);
       State.updateTask(id, "finished");
       if (payload.message) State.appendStep(id, payload.message.slice(0, 60));
       Sound.play("finish");
-      if (focused) surface("finished", true);
-      else State.setPillBadge(id, "finished");
+      attention("finished", "finished");
       settleTimers.set(id, window.setTimeout(() => {
         settleTimers.delete(id);
         State.updateTask(id, "idle");
@@ -223,13 +235,14 @@ export function handleAgentEvent(island: Island, payload: AgentEvent) {
       if (payload.fatal === false) {
         State.updateTask(id, "working");
         State.appendStep(id, payload.message || "⚠ failed");
+        Sound.play("error");
+        attention("error", "error");
         break;
       }
       if (payload.message) State.appendStep(id, payload.message.slice(0, 60));
       State.updateTask(id, "error");
       Sound.play("error");
-      if (focused) surface("error", true);
-      else State.setPillBadge(id, "error");
+      attention("error", "error");
       break;
 
     case "session_ended":

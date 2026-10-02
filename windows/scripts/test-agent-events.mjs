@@ -20,7 +20,7 @@ const bridgeUrl = url(`export const calls = [];
     startCodexMonitor: async () => {},
   };
   export const onEvent = async () => () => {};`);
-const soundUrl = url('export const Sound = { play() {} };');
+const soundUrl = url('export const sounds = []; export const Sound = { play(name) { sounds.push(name); } };');
 const hooksUrl = module('island/hooks.ts', {
   '../core/state': stateUrl, '../core/agent-events': eventUrl,
   '../core/bridge': bridgeUrl, '../core/sound': soundUrl,
@@ -29,6 +29,7 @@ const { State } = await import(stateUrl);
 const { claudeEvent } = await import(eventUrl);
 const { handleAgentEvent } = await import(hooksUrl);
 const { calls } = await import(bridgeUrl);
+const { sounds } = await import(soundUrl);
 const timers = new Map();
 let nextTimer = 0;
 globalThis.window = {
@@ -36,7 +37,8 @@ globalThis.window = {
   clearTimeout: id => timers.delete(id),
 };
 const alerts = [];
-const island = { alert: view => alerts.push(view), reveal() {}, setView() {}, dropPin() {} };
+let reveals = 0;
+const island = { alert: view => alerts.push(view), reveal() { reveals++; }, setView: view => alerts.push(view), dropPin() {} };
 State.loadIntegrationTasks();
 const originalIds = State.tasks.map(t => t.id);
 const claude = (name, fields = {}) => {
@@ -54,14 +56,26 @@ assert.equal(claude('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'g
 assert.match(State.focusTask.steps.at(-1), /git status/);
 assert.equal(claude('PreToolUse', { tool_name: 'Edit', tool_input: { file_path: 'C:/file.ts' } }).type, 'file_edit');
 claude('PostToolUse');
+assert.equal(alerts.length, 0, 'routine Claude activity never opens a card');
+assert.equal(reveals, 0, 'routine Claude activity never reveals the island');
+assert.equal(sounds.length, 0, 'routine Claude activity is silent');
 claude('PostToolUseFailure');
+assert.equal(alerts.at(-1), 'error', 'recoverable tool errors still alert');
 assert.equal(State.focusTask.state, 'working');
 claude('SubagentStart');
 assert.equal(State.focusTask.steps.at(-1), '+ subagent');
 claude('SubagentStop');
 assert.equal(State.focusTask.steps.at(-1), '• subagent done');
+const routineAlerts = alerts.length;
+claude('Notification', { message: 'Authentication successful' });
+assert.equal(alerts.length, routineAlerts, 'informational notifications are quiet');
 claude('Notification', { message: 'rate limit' });
+assert.equal(alerts.at(-1), 'question');
 assert.equal(State.focusTask.state, 'ratelimit');
+claude('Notification', { notification_type: 'idle_prompt', message: 'Waiting for input' });
+assert.equal(State.focusTask.state, 'question');
+assert.equal(alerts.at(-1), 'question');
+assert.equal(claude('PreToolUse', { tool_name: 'AskUserQuestion' }).type, 'waiting');
 claude('PermissionRequest', { request_id: 'r1', tool_name: 'Write', tool_input: { file_path: 'C:/.env' } });
 assert.equal(State.pendingApproval.command, 'Write · C:/.env');
 assert.ok(calls.some(([kind, id]) => kind === 'ack' && id === 'r1'));
@@ -88,6 +102,7 @@ assert.equal(claudeEvent({ hook_event_name: 'Unknown' }), null);
 const codex = (type, fields = {}) => handleAgentEvent(island, {
   source: 'codex', type, session_id: 'x1', cwd: 'C:/CodexProject', ...fields,
 });
+const beforeCodex = [alerts.length, reveals, sounds.length];
 codex('session_started');
 assert.equal(State.focusId, 'integration_claude', 'Codex never steals focus');
 const task = State.tasks.find(t => t.id === 'integration_codex');
@@ -99,12 +114,14 @@ assert.equal(task.state, 'working');
 assert.match(task.steps.at(-1), /cargo test/);
 codex('file_edit', { tool_name: 'Edit', message: 'src/main.rs' });
 assert.equal(task.steps.at(-1), 'src/main.rs');
+assert.deepEqual([alerts.length, reveals, sounds.length], beforeCodex, 'Codex starts, commands and edits are quiet');
 codex('approval_requested', { request_id: 'never-approve' });
 assert.equal(State.pendingApproval, null);
 codex('session_completed', { session_id: 'old-session' });
 assert.equal(task.state, 'working', 'another session cannot finish the active pill');
 codex('session_completed', { message: 'All done' });
 assert.equal(task.pillBadge, 'finished');
+assert.equal(reveals, beforeCodex[1] + 1, 'unfocused completion reveals its badge');
 State.setFocus(task.id);
 codex('session_completed');
 assert.equal(alerts.at(-1), 'finished');
@@ -114,8 +131,24 @@ assert.equal(task.name, 'OtherProject');
 assert.equal(task.sessionId, 'x2', 'open-chat target follows the displayed session');
 for (const callback of timers.values()) callback();
 assert.equal(task.state, 'thinking');
+codex('waiting', { session_id: 'x2', message: 'Approval needed inside Codex' });
+assert.equal(task.state, 'question');
+assert.equal(alerts.at(-1), 'question');
+assert.equal(State.pendingApproval, null, 'Codex waiting is observational');
+State.paused = true;
+const pausedAlerts = [alerts.length, reveals, sounds.length];
+codex('waiting', { session_id: 'x2' });
+assert.deepEqual([alerts.length, reveals, sounds.length], pausedAlerts, 'pause suppresses attention alerts too');
+State.paused = false;
+State.pendingApproval = { requestId: 'keep-card', sessionId: 'c1' };
+const pinnedAlerts = alerts.length;
+codex('waiting', { session_id: 'x2' });
+assert.equal(alerts.length, pinnedAlerts, 'another attention event cannot replace a Claude decision card');
+assert.equal(State.pendingApproval.requestId, 'keep-card');
+State.pendingApproval = null;
 codex('error', { session_id: 'x2', fatal: false, message: 'command failed' });
 assert.equal(task.state, 'working');
+assert.equal(alerts.at(-1), 'error');
 codex('error', { session_id: 'x2', message: 'Turn interrupted' });
 assert.equal(task.state, 'error');
 State.loadIntegrationTasks();

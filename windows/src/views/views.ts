@@ -320,20 +320,22 @@ function buildApproval(actions: ViewActions): ViewHost {
 
 // ── Question ──────────────────────────────────────────────────────────────────
 
-function buildQuestion(): ViewHost {
+function buildQuestion(actions: ViewActions): ViewHost {
   const who = h("div");
   const title = h("div", { class: "title" });
+  const open = btn("Open chat", "primary", () => actions.openSession());
+  const note = h("div", { class: "sub", text: "Answer in your terminal — Coucou can't reply for you yet." });
   const row = h("div", { class: "actions" });
   const el = h("div", { class: "view" }, card("cyan", stack(116, 16, who, title, row)));
   return {
     el,
     sync() {
       clear(who);
-      who.append(agentWho(State.focusTask, "Claude Code is asking a question"));
+      who.append(agentWho(State.focusTask, `${sessionSourceLabel(State.focusTask?.source)} needs attention`));
       const task = State.focusTask;
-      title.textContent = task?.steps.at(-1) ?? "Claude needs an answer.";
-      clear(row);
-      row.append(h("div", { class: "sub", text: "Answer in your terminal — Coucou can't reply for you yet." }));
+      title.textContent = task?.steps.at(-1) ?? "Waiting for your input.";
+      const content = task?.source === "codex" ? open : note;
+      if (row.firstChild !== content) row.replaceChildren(content);
     },
   };
 }
@@ -344,9 +346,10 @@ function buildError(actions: ViewActions): ViewHost {
   const who = h("div");
   const title = h("div", { class: "title", text: "Workflow stopped." });
   const detail = h("div", { class: "detail" });
+  const open = btn("Open in n8n", "secondary", () => actions.openTarget());
   const row = h("div", { class: "actions" },
     btn("Retry", "primary", () => actions.setView(State.defaultView())),
-    btn("Open in n8n", "secondary", () => actions.openUrl("")),
+    open,
   );
   const el = h("div", { class: "view" }, card("red", stack(116, 16, who, title, detail, row)));
   return {
@@ -355,8 +358,11 @@ function buildError(actions: ViewActions): ViewHost {
       const task = State.focusTask;
       clear(who);
       who.append(agentWho(task, sessionSourceLabel(task?.source)));
-      title.textContent = task?.source === "n8n" ? "Workflow stopped." : "Session stopped on an error.";
+      title.textContent = task?.source === "n8n" ? "Workflow stopped."
+        : task?.state === "working" ? "A command or tool failed." : "Session stopped on an error.";
       detail.textContent = task?.steps.at(-1) ?? "No detail available.";
+      open.querySelector("span")!.textContent = task?.source === "codex" ? "Open chat"
+        : task?.source === "n8n" ? "Open in n8n" : "Open terminal";
     },
   };
 }
@@ -494,7 +500,7 @@ export function buildViews(
   map.set("overview", buildOverview(actions));
   map.set("empty", buildEmpty(actions));
   map.set("approval", buildApproval(actions));
-  map.set("question", buildQuestion());
+  map.set("question", buildQuestion(actions));
   map.set("error", buildError(actions));
   map.set("finished", buildFinished(actions));
   map.set("confused", buildConfused());

@@ -147,6 +147,10 @@ impl Tail {
                 "task_complete" | "turn_complete" => json!({
                     "type": "session_completed", "message": clipped(text(payload, "last_agent_message"), 60)
                 }),
+                "request_user_input" | "elicitation_request" => json!({"type": "waiting", "message": "Codex is waiting for your input."}),
+                "exec_approval_request" | "apply_patch_approval_request" | "request_permissions" =>
+                    json!({"type": "waiting", "message": "Codex is waiting for your approval."}),
+                "stream_error" => json!({"type": "error", "fatal": false, "message": "Codex connection failed; retrying."}),
                 "turn_aborted" => json!({"type": "error", "message": "Turn interrupted"}),
                 "error" => json!({"type": "error", "message": clipped(text(payload, "message"), 200)}),
                 "exec_command_begin" => json!({"type": "command", "tool_name": "Command",
@@ -187,7 +191,9 @@ fn command(value: &Value) -> String {
 fn tool_event(payload: &Value) -> Value {
     let name = text(payload, "name");
     let args: Value = serde_json::from_str(text(payload, "arguments")).unwrap_or(Value::Null);
-    if ["exec_command", "shell_command", "shell"].contains(&name) {
+    if matches!(name.rsplit('.').next(), Some("request_user_input" | "request_user_input_async")) {
+        json!({"type": "waiting", "message": "Codex is waiting for your input."})
+    } else if ["exec_command", "shell_command", "shell"].contains(&name) {
         let cmd = args.get("cmd").or_else(|| args.get("command")).unwrap_or(&Value::Null);
         json!({"type": "command", "tool_name": "Command", "tool_input": {"command": command(cmd)}})
     } else if name == "apply_patch" {
@@ -248,6 +254,10 @@ mod tests {
             assert_eq!(event["type"], expected);
             assert_eq!(event["session_id"], "s1");
         }
+        for kind in ["request_user_input", "elicitation_request", "exec_approval_request", "apply_patch_approval_request", "request_permissions"] {
+            assert_eq!(tail.record(&json!({"type":"event_msg","payload":{"type":kind}})).unwrap()["type"], "waiting");
+        }
+        assert_eq!(tool_event(&json!({"name":"functions.request_user_input"}))["type"], "waiting");
         let cmd = tail.record(&json!({"type":"response_item","payload":{"type":"function_call",
             "name":"exec_command","arguments":"{\"cmd\":\"git status\"}"}})).unwrap();
         assert_eq!(cmd["tool_input"]["command"], "git status");

@@ -85,6 +85,13 @@ needed for monitoring.
 session in the installed Codex desktop app using its registered `codex://` link.
 The desktop app must be installed and able to access that local session.
 
+Routine session starts, commands and edits update the ticker silently. Alerts
+are limited to completion, errors, approval requests, input requests and rate
+limits. The same filter applies to Claude and Codex. Codex input-request tool
+calls are detected; live approval/error events are handled if present, but
+Codex does not reliably persist them in rollout files, so some blockers remain
+visible only inside Codex. Codex approvals remain inside Codex.
+
 Existing history is skipped at startup; a session already running appears when
 it next writes activity. One Codex pill shows the latest active session. Rollout
 formats vary by Codex version, so unknown records are ignored; command/edit
