@@ -21,6 +21,14 @@ use windows::Win32::System::Threading::{WaitForSingleObject, INFINITE};
 static STARTED: AtomicBool = AtomicBool::new(false);
 const MAX_LINE: u64 = 1024 * 1024;
 
+/// Only a UUID may enter the installed Codex app's thread link.
+pub fn chat_url(session_id: &str) -> Option<String> {
+    let valid = session_id.len() == 36 && session_id.bytes().enumerate().all(|(i, b)| {
+        if [8, 13, 18, 23].contains(&i) { b == b'-' } else { b.is_ascii_hexdigit() }
+    });
+    valid.then(|| format!("codex://threads/{session_id}"))
+}
+
 pub fn start(app: AppHandle) {
     if STARTED.swap(true, Ordering::Relaxed) { return; }
     let home = std::env::var_os("CODEX_HOME").map(PathBuf::from).or_else(|| {
@@ -216,6 +224,17 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::sync::Mutex;
+
+    #[test]
+    fn chat_links_accept_only_thread_uuids() {
+        let id = "01a0fb98-fb4b-7491-9c9f-96e6ee07ab9e";
+        assert_eq!(chat_url(id), Some(format!("codex://threads/{id}")));
+        assert!(chat_url(&id.to_uppercase()).is_some());
+        for invalid in ["", "../settings", "not-a-thread", "01a0fb98-fb4b-7491-9c9f-96e6ee07ab9e?prompt=x",
+            "01a0fb98-fb4b-7491-9c9f-96e6ee07ab9g", "01a0fb98/fb4b-7491-9c9f-96e6ee07ab9e"] {
+            assert!(chat_url(invalid).is_none());
+        }
+    }
 
     #[test]
     fn codex_normalizes_lifecycle_tools_and_ignores_unknown_records() {

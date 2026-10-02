@@ -133,6 +133,17 @@ fn open_url(url: String) {
         .spawn();
 }
 
+#[tauri::command]
+fn open_codex_chat(session_id: String) -> Result<(), String> {
+    let url = codex::chat_url(&session_id).ok_or("Invalid Codex session ID")?;
+    Command::new("rundll32.exe")
+        .args(["url.dll,FileProtocolHandler", &url])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("Could not open Codex: {err}"))
+}
+
 /// "Open terminal" opens the working folder in VS Code when `code` is on PATH,
 /// and falls back to Explorer otherwise.
 #[tauri::command]
@@ -396,6 +407,7 @@ pub fn run() {
             reposition,
             open_url,
             open_in_vscode,
+            open_codex_chat,
             quit_app,
             hooks_status,
             hooks_preview,

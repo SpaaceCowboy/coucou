@@ -81,6 +81,10 @@ when those records are available. It never changes Codex configuration, starts
 Codex, reads authentication files, or answers Codex approvals. No API key is
 needed for monitoring.
 
+**Open chat** on a completed Codex task (or the overview arrow) opens that
+session in the installed Codex desktop app using its registered `codex://` link.
+The desktop app must be installed and able to access that local session.
+
 Existing history is skipped at startup; a session already running appears when
 it next writes activity. One Codex pill shows the latest active session. Rollout
 formats vary by Codex version, so unknown records are ignored; command/edit

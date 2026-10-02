@@ -17,7 +17,7 @@ export interface ViewActions {
   setView(v: IslandViewName): void;
   collapse(): void;
   setFocus(id: string): void;
-  openTerminal(): void;
+  openSession(): void;
   /** The ↗ button: opens whatever the focused pill points at. */
   openTarget(): void;
   openUrl(url: string): void;
@@ -366,8 +366,9 @@ function buildError(actions: ViewActions): ViewHost {
 function buildFinished(actions: ViewActions): ViewHost {
   const who = h("div");
   const title = h("div", { class: "title" });
+  const open = btn("Open terminal", "primary", () => actions.openSession());
   const row = h("div", { class: "actions" },
-    btn("Open terminal", "primary", () => actions.openTerminal()),
+    open,
     btn("OK", "secondary", () => actions.collapse()),
   );
   const el = h("div", { class: "view" }, card("green", stack(116, 16, who, title, row)));
@@ -376,6 +377,7 @@ function buildFinished(actions: ViewActions): ViewHost {
     sync() {
       clear(who);
       who.append(agentWho(State.focusTask, `${sessionSourceLabel(State.focusTask?.source)} finished`));
+      open.querySelector("span")!.textContent = State.focusTask?.source === "codex" ? "Open chat" : "Open terminal";
       title.textContent = State.focusTask?.steps.at(-1) ?? "Session finished";
     },
   };
