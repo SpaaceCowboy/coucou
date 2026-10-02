@@ -205,7 +205,10 @@ function buildOverview(actions: ViewActions): ViewHost {
           who.append(h("span", { class: "project", text: task.sessionCwd?.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "Codex", title: task.sessionCwd || "" }));
           const status = ({ thinking: "Thinking…", working: "Working…", question: "Waiting for you", approval: "Needs your decision", ratelimit: "Waiting for usage limit", error: "Needs attention", finished: "Finished", idle: "Idle" } as Record<string, string>)[task.state] || "Working…";
           // Keep activity available on hover without presenting tool names as task progress.
-          who.append(h("span", { class: "tool", text: "Codex · " + status, title: task.steps.at(-1) || status }));
+          who.append(h("div", { class: "session-status" },
+            h("span", { class: "tool", text: "Codex · " + status, title: task.steps.at(-1) || status }),
+            h("button", { class: "link-btn open-chat", text: "Open chat", onclick: () => actions.openSession() })));
+
         } else {
           who.append(h("span", { class: "tool", text: sessionSourceLabel(task.source) }));
           if (task.steps.length > 1) who.append(h("span", {
@@ -301,7 +304,7 @@ function buildEmpty(actions: ViewActions): ViewHost {
       h("div", { class: "sub", text: "Drop a file or window, or ask me anything." }),
     ),
     h("div", { class: "grow" }),
-    btn("Ask Claude", "primary", () => actions.setView("prompt")),
+    btn("Ask Mochi", "primary", () => actions.setView("prompt")),
   );
   return { el: h("div", { class: "view" }, card(null, body)), sync() {} };
 }

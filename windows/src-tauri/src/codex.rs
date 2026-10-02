@@ -71,7 +71,7 @@ pub fn start(app: AppHandle, session_ids: Vec<String>) {
                 titles = next; index_stamp = stamp;
             }
             let emit = |mut event: Value| {
-                if event["cwd"].as_str().is_some_and(|cwd| Path::new(cwd) == crate::settings::local_dir().join("clickup")) { return; }
+                if event["cwd"].as_str().is_some_and(|cwd| ["clickup","chat"].iter().any(|name| Path::new(cwd) == crate::settings::local_dir().join(name))) { return; }
                 if let Some(title) = titles.get(text(&event, "session_id")) { event["title"] = json!(title); }
                 let _ = app.emit_to(crate::island::WINDOW_LABEL, "agent", event);
             };
@@ -405,5 +405,91 @@ mod tests {
         tail.read(&path, &emit).unwrap();
         assert_eq!(events.lock().unwrap().len(), 3);
         fs::remove_file(&path).unwrap();
+    }
+}
+
+// The chat view keeps its own conversation, separate from ClickUp proposals.
+#[derive(Default)]
+pub struct CodexChat(pub tokio::sync::Mutex<Conversation>);
+#[derive(Default)]
+pub struct Conversation {
+    client: Option<crate::clickup::Client>,
+    history: Vec<(String,String)>,
+    context: Option<crate::claude::ChatContext>,
+}
+
+fn chat_input(query: &str, context: Option<&crate::claude::ChatContext>) -> Result<Vec<Value>,String> {
+    use crate::claude::ChatContext;
+    let mut input = Vec::new();
+    match context {
+        Some(ChatContext::File {name,path}) => {
+            let file = Path::new(path);
+            let ext = file.extension().and_then(|e|e.to_str()).unwrap_or("").to_lowercase();
+            if ext == "pdf" { return Err("For PDF questions, choose Claude in Settings → Chat. Your attached file will stay here.".into()); }
+            let size = fs::metadata(file).map_err(|_| "The attached file is no longer available. Drop it again.")?.len();
+            if ["png","jpg","jpeg","webp","gif"].contains(&ext.as_str()) {
+                if size > 8*1024*1024 { return Err("Use an image smaller than 8 MB, or select Claude in Settings → Chat.".into()); }
+                input.push(json!({"type":"localImage","path":path}));
+            } else {
+                let block = crate::claude::file_block(path).ok_or("Use a text file smaller than 200 KB, or choose Claude for this attachment.")?;
+                input.push(json!({"type":"text","text":block["text"]}));
+            }
+            input.push(json!({"type":"text","text":format!("Attached file: {name}")}));
+        }
+        Some(ChatContext::Window {app_name,title,url}) => input.push(json!({"type":"text","text":format!("Attached context: app {app_name}, window {title}, URL {}",url.as_deref().unwrap_or(""))})),
+        None => {}
+    }
+    input.push(json!({"type":"text","text":query}));
+    Ok(input)
+}
+
+pub async fn chat_send(state: &CodexChat, query: String, context: Option<crate::claude::ChatContext>) -> Result<crate::claude::ChatReply,String> {
+    if query.trim().is_empty() || query.len() > 20000 { return Err("Enter a question shorter than 20,000 characters.".into()); }
+    let mut session = state.0.lock().await;
+    let fresh = session.client.is_none();
+    if session.history.is_empty() { session.context = context; }
+    let mut input = chat_input(&query, if fresh {session.context.as_ref()} else {None})?;
+    if fresh && !session.history.is_empty() {
+        // ponytail: replay at most 100,000 characters after reconnect; persist threads if longer chats need recovery.
+        let transcript = session.history.iter().rev().scan(0,|length,(role,text)| {
+            *length += text.chars().count(); if *length > 100000 {None} else {Some(format!("{role}: {text}"))}
+        }).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+        input.insert(0,json!({"type":"text","text":format!("Earlier conversation, provided as context:\n{transcript}")}));
+    }
+    let mut client = match session.client.take() { Some(client)=>client, None=>crate::clickup::Client::start_chat().await? };
+    let text = client.chat_turn(input).await?;
+    session.client = Some(client);
+    session.history.push(("User".into(),query)); session.history.push(("Assistant".into(),text.clone()));
+    Ok(crate::claude::ChatReply {text})
+}
+
+#[cfg(test)]
+mod chat_tests {
+    use super::*;
+    #[test]
+    fn chat_context_and_validation_preserve_attachment_choices() {
+        use crate::claude::ChatContext;
+        let input = chat_input("Hello",Some(&ChatContext::Window{app_name:"Editor".into(),title:"Notes".into(),url:None})).unwrap();
+        assert_eq!(input[1]["text"],"Hello"); assert!(input[0]["text"].as_str().unwrap().contains("Notes"));
+        let pdf = ChatContext::File{name:"file.pdf".into(),path:"file.pdf".into()};
+        assert!(chat_input("Read this",Some(&pdf)).unwrap_err().contains("choose Claude"));
+        let path = std::env::temp_dir().join(format!("coucou-chat-{}.txt",std::process::id()));
+        fs::write(&path,"Test attachment contents").unwrap();
+        let file = ChatContext::File{name:"Notes".into(),path:path.to_string_lossy().into_owned()};
+        assert!(chat_input("Read",Some(&file)).unwrap()[0]["text"].as_str().unwrap().contains("Test attachment contents"));
+        fs::remove_file(path).unwrap();
+    }
+    #[test]
+    #[ignore = "requires signed-in Codex; three small model requests, no ClickUp writes"]
+    fn installed_codex_chat_keeps_followup_context() {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let state = CodexChat::default();
+            chat_send(&state,"Remember this word for my next question: coucou-rainbow. Reply OK.".into(),None).await.unwrap();
+            let reply = chat_send(&state,"What word did I ask you to remember? Reply only with the word.".into(),None).await.unwrap();
+            assert!(reply.text.contains("coucou-rainbow"));
+            state.0.lock().await.client = None;
+            let recovered = chat_send(&state,"After reconnecting, what word did I ask you to remember? Reply only with it.".into(),None).await.unwrap();
+            assert!(recovered.text.contains("coucou-rainbow"));
+        });
     }
 }

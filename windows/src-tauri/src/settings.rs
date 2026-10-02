@@ -22,11 +22,15 @@ pub struct Settings {
     pub model: String,
     #[serde(default)]
     pub show_integration_pills: bool,
+    #[serde(default = "default_chat_provider")]
+    pub chat_provider: String,
     #[serde(default)]
     pub clickup_workspace: String,
     #[serde(default)]
     pub clickup_list: String,
 }
+
+fn default_chat_provider() -> String { "codex".into() }
 
 fn default_model() -> String {
     crate::claude::DEFAULT_MODEL.to_string()
@@ -50,6 +54,7 @@ impl Default for Settings {
             hooks_installed: false,
             model: default_model(),
             show_integration_pills: false,
+            chat_provider: default_chat_provider(),
             clickup_workspace: String::new(),
             clickup_list: String::new(),
         }
@@ -102,10 +107,12 @@ mod tests {
     fn old_preferences_keep_their_values() {
         let mut value = serde_json::to_value(Settings::default()).unwrap();
         let object = value.as_object_mut().unwrap();
+        object.remove("chatProvider");
         object.remove("showIntegrationPills"); object.remove("clickupWorkspace"); object.remove("clickupList");
         object.insert("soundVolume".into(),serde_json::json!(0.07));
         let loaded: Settings = serde_json::from_value(value).unwrap();
         assert_eq!(loaded.sound_volume,0.07); assert!(!loaded.show_integration_pills);
+        assert_eq!(loaded.chat_provider,"codex");
         assert!(loaded.clickup_list.is_empty()); assert_eq!(loaded.active_integrations.len(),4);
     }
 }

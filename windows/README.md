@@ -212,3 +212,8 @@ problems. It stays on your machine.
   attach it as context, and jumping to a specific terminal window — "Open
   terminal" opens the working folder in VS Code when `code` is on your `PATH`.
 - Cal.com shows the next bookings as a list rather than the Mac's calendar.
+
+
+### Coucou chat
+
+The chat section defaults to Codex using the installed Codex app and existing ChatGPT sign-in. Settings → Chat lets you switch back to Claude; its API key, model, web search and PDF support remain available. Switching provider starts a new conversation. Codex chat supports multi-turn questions, web search, text/code attachments up to 200 KB and images up to 8 MB. PDFs use the Claude option. Connection and usage errors stay inside chat so you can retry; New chat resets the conversation. The dedicated chat connection is read-only and does not expose your configured external integrations.

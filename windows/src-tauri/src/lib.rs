@@ -285,16 +285,23 @@ fn approval_decline(app: AppHandle, request_id: String) {
 async fn chat_send(
     shared: State<'_, Shared>,
     chat: State<'_, Chat>,
+    codex_chat: State<'_, codex::CodexChat>,
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
-    let model = shared.settings.lock().unwrap().model.clone();
-    claude::send(&chat, &model, query, context).await
+    let settings = shared.settings.lock().unwrap().clone();
+    match settings.chat_provider.as_str() {
+        "claude" => claude::send(&chat, &settings.model, query, context).await,
+        "codex" => codex::chat_send(&codex_chat, query, context).await,
+        _ => Err("Choose Codex or Claude in Settings → Chat.".into()),
+    }
 }
 
 #[tauri::command]
-fn chat_reset(chat: State<Chat>) {
+async fn chat_reset(chat: State<'_, Chat>, codex_chat: State<'_, codex::CodexChat>) -> Result<(),String> {
     chat.reset();
+    *codex_chat.0.lock().await = Default::default();
+    Ok(())
 }
 
 /// Copies a dropped file into the inbox and reports its name back.
@@ -420,6 +427,7 @@ pub fn run() {
         })
         .manage(Pending::default())
         .manage(Chat::default())
+        .manage(codex::CodexChat::default())
         .manage(clickup::Clickup::default())
         .invoke_handler(tauri::generate_handler![
             boot,

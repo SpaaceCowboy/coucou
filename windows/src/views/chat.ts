@@ -37,6 +37,10 @@ function contextChip(label: string): HTMLElement {
 }
 
 export function buildPrompt(onHeightChange: () => void): ViewHost {
+  const providerLabel = h("span");
+  const errorBox = h("div", {class:"chat-error",role:"alert"});
+  const fresh = h("button",{class:"link-btn",text:"New chat",onclick:()=>void reset(true)});
+  const toolbar = h("div",{class:"chat-toolbar"},providerLabel,h("button",{class:"link-btn",text:"Settings",onclick:()=>void Bridge.openSettingsWindow()}),fresh);
   const chipRow = h("div", { class: "chip-row" });
   const log = h("div", { class: "chat-log" });
   const input = h("input", {
@@ -44,6 +48,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     class: "chat-input",
     placeholder: "Ask me anything…",
     spellcheck: "false",
+    "aria-label": "Chat message",
   }) as HTMLInputElement;
   const send = h("button", { class: "send-btn", title: "Send" }, svg(ICONS.arrowUp, 11));
   const bar = h("div", { class: "chat-bar" }, input, send);
@@ -51,21 +56,35 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   const el = h(
     "div",
     { class: "view" },
-    h("div", { class: "card wash chat-card" }, h("div", { class: "chat-body" }, chipRow, log, bar)),
+    h("div", { class: "card wash chat-card" }, h("div", { class: "chat-body" }, toolbar, chipRow, log, errorBox, bar)),
   );
   (el.querySelector(".card") as HTMLElement).style.setProperty("--wash", "rgba(99,102,241,0.5)");
 
   let sending = false;
   let renderedCount = -1;
+  let resetting = false;
+  let conversationProvider = State.settings.chatProvider;
+
+  async function reset(clearFile = false) {
+    if (sending || resetting) return;
+    resetting = true; conversationProvider = State.settings.chatProvider;
+    State.chatHistory = []; State.stateOverride = null; renderedCount = -1; errorBox.textContent = "";
+    if (clearFile) {input.value = ""; State.droppedFile = null; State.promptContext = null;}
+    State.notify(); onHeightChange();
+    try { await Bridge.chatReset(); } finally {resetting = false; State.notify(); input.focus();}
+  }
 
   async function submit() {
     const query = input.value.trim();
-    if (!query || sending) return;
+    if (!query || sending || resetting) return;
+    const provider = conversationProvider;
+    const messageId = nextId++;
+    errorBox.textContent = "";
     input.value = "";
     sending = true;
     Sound.play("send");
 
-    State.chatHistory.push({ id: nextId++, role: "user", content: query });
+    State.chatHistory.push({ id: messageId, role: "user", content: query });
     State.stateOverride = "thinking";
     State.notify();
     onHeightChange();
@@ -76,16 +95,20 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
     try {
       const reply = await Bridge.chatSend(query, context);
+      if (provider !== State.settings.chatProvider) return;
       State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text });
       State.stateOverride = null;
       Sound.play("finish");
     } catch (err) {
       State.stateOverride = null;
-      State.noteMessage = String(err).replace(/^Error:\s*/, "");
-      State.view = "note";
+      if (provider !== State.settings.chatProvider) return;
+      State.chatHistory = State.chatHistory.filter(message => message.id !== messageId);
+      errorBox.textContent = String(err).replace(/^Error:\s*/, "");
+      if (!input.value) input.value = query;
       Sound.play("error");
     } finally {
       sending = false;
+      State.stateOverride = null;
       State.notify();
       onHeightChange();
       input.focus();
@@ -104,6 +127,9 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   return {
     el,
     sync() {
+      providerLabel.textContent = State.settings.chatProvider === "codex" ? "Codex · ChatGPT" : "Claude";
+      fresh.disabled = sending || resetting;
+      if (!sending && !resetting && conversationProvider !== State.settings.chatProvider) void reset();
       const file = State.droppedFile;
       const wantChip = file?.name ?? "";
       if (chipRow.dataset.label !== wantChip) {
@@ -123,7 +149,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       }
 
       input.placeholder = State.chatHistory.length === 0 ? "Ask me anything…" : "Continue…";
-      input.disabled = sending;
+      input.disabled = send.disabled = sending || resetting;
     },
     focus() {
       input.focus();

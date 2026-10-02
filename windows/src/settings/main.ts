@@ -179,9 +179,18 @@ const MODELS: [string, string][] = [
   ["claude-haiku-4-5", "Claude Haiku 4.5"],
 ];
 
+function chatSection(): HTMLElement {
+  const provider = h("select", {"aria-label":"Chat provider"}) as HTMLSelectElement;
+  provider.append(h("option",{value:"codex",text:"Codex · ChatGPT sign-in"}),h("option",{value:"claude",text:"Claude · API key"}));
+  provider.value = settings.chatProvider;
+  provider.onchange = () => {settings.chatProvider = provider.value as Settings["chatProvider"];void save();};
+  return h("section",{},h("h2",{text:"Chat"}),h("div",{class:"row"},h("label",{text:"Use"}),provider),
+    h("div",{class:"hint",text:"Codex uses your existing ChatGPT sign-in and included Codex allowance. No OpenAI API key is needed. Claude keeps its own API key and model below. Changing provider starts a new conversation. PDF attachments use Claude; Codex supports text and images."}));
+}
+
 function apiSection(hasKey: boolean): HTMLElement {
   const dot = statusDot(hasKey);
-  const state = h("span", { class: "hint", text: hasKey ? "Key saved in the Windows Credential Manager." : "No key yet — the chat needs one." });
+  const state = h("span", { class: "hint", text: hasKey ? "Key saved in the Windows Credential Manager." : "No Claude key yet. Codex chat uses your ChatGPT sign-in." });
 
   const field = h("input", {
     type: "password",
@@ -200,7 +209,7 @@ function apiSection(hasKey: boolean): HTMLElement {
     dot.style.background = present ? "#22c55e" : "#f4505e";
     state.textContent = present
       ? "Key saved in the Windows Credential Manager."
-      : "No key yet — the chat needs one.";
+      : "No Claude key yet. Codex chat uses your ChatGPT sign-in.";
     field.placeholder = present ? "••••••••••••  (stored)" : "sk-ant-...";
     clearBtn.style.display = present ? "" : "none";
   }
@@ -498,6 +507,7 @@ async function main() {
   root.append(
     h("h1", {}, h("span", { text: "Coucou" }), h("span", { class: "version", text: version })),
     claudeSection(status),
+    chatSection(),
     apiSection(hasKey),
     clickupSection(),
     integrationsSection(present),

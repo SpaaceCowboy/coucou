@@ -194,7 +194,7 @@ async fn call(key: &str, body: &Value) -> Result<Value, String> {
 
 /// PDF → document block, image → image block, text/code → inline text.
 /// Mirrors readFileAsBlock() in ClaudeService.swift.
-fn file_block(path: &str) -> Option<Value> {
+pub(crate) fn file_block(path: &str) -> Option<Value> {
     let ext = std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
