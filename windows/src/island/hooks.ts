@@ -173,6 +173,10 @@ export function handleAgentEvent(island: Island, payload: AgentEvent) {
       island.reveal();
     }
   };
+  const resumeView = () => {
+    if (focused && State.mode === "expanded" && !State.pendingApproval
+        && ["finished", "error", "question"].includes(State.view)) island.setView(State.defaultView());
+  };
   const waiting = (state: "question" | "ratelimit") => {
     const settle = settleTimers.get(id);
     if (settle != null) window.clearTimeout(settle);
@@ -188,6 +192,8 @@ export function handleAgentEvent(island: Island, payload: AgentEvent) {
     case "session_started":
       upsert(id, payload, projectName, cwd);
       if (payload.source === "codex") State.updateTask(id, "thinking");
+      State.setPillBadge(id, null);
+      resumeView();
       break;
 
     case "activity":
@@ -199,6 +205,7 @@ export function handleAgentEvent(island: Island, payload: AgentEvent) {
       State.setPillBadge(id, null);
       if (payload.message) State.appendStep(id, payload.message.slice(0, 60));
       else if (payload.tool_name) State.appendStep(id, stepLabel(payload.tool_name, payload.tool_input ?? {}));
+      resumeView();
       break;
     }
 

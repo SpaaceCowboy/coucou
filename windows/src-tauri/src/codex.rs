@@ -150,6 +150,8 @@ impl Tail {
                 "request_user_input" | "elicitation_request" => json!({"type": "waiting", "message": "Codex is waiting for your input."}),
                 "exec_approval_request" | "apply_patch_approval_request" | "request_permissions" =>
                     json!({"type": "waiting", "message": "Codex is waiting for your approval."}),
+                "thread_goal_updated" if matches!(text(&payload["goal"], "status"), "blocked" | "paused" | "usageLimited" | "budgetLimited") =>
+                    json!({"type": "waiting", "message": "Codex goal is pending or blocked; check the chat."}),
                 "stream_error" => json!({"type": "error", "fatal": false, "message": "Codex connection failed; retrying."}),
                 "turn_aborted" => json!({"type": "error", "message": "Turn interrupted"}),
                 "error" => json!({"type": "error", "message": clipped(text(payload, "message"), 200)}),
@@ -258,6 +260,10 @@ mod tests {
             assert_eq!(tail.record(&json!({"type":"event_msg","payload":{"type":kind}})).unwrap()["type"], "waiting");
         }
         assert_eq!(tool_event(&json!({"name":"functions.request_user_input"}))["type"], "waiting");
+        for status in ["blocked", "paused", "usageLimited", "budgetLimited"] {
+            assert_eq!(tail.record(&json!({"type":"event_msg","payload":{"type":"thread_goal_updated","goal":{"status":status}}})).unwrap()["type"], "waiting");
+        }
+        assert!(tail.record(&json!({"type":"event_msg","payload":{"type":"thread_goal_updated","goal":{"status":"active"}}})).is_none());
         let cmd = tail.record(&json!({"type":"response_item","payload":{"type":"function_call",
             "name":"exec_command","arguments":"{\"cmd\":\"git status\"}"}})).unwrap();
         assert_eq!(cmd["tool_input"]["command"], "git status");
