@@ -186,5 +186,11 @@ assert.deepEqual([alerts.length,reveals,sounds.length],quiet,'startup reconcilia
 const dismissed=State.recentAlerts[0].id;State.dismissAlert(dismissed);
 assert.ok(!JSON.parse(saved.get('coucou-sessions')).alerts.some(a=>a.id===dismissed));
 State.settings.showIntegrationPills=true;State.loadIntegrationTasks();
+const guardianAlerts = State.recentAlerts.length;
+codex('session_started',{session_id:'guardian-review',title:'Guardian review'});
+assert.ok(State.tasks.some(t=>t.id==='codex:guardian-review'));
+codex('session_metadata',{session_id:'guardian-review',internal_review:true});
+assert.ok(!State.tasks.some(t=>t.id==='codex:guardian-review'),'restored internal reviews are removed quietly');
+assert.equal(State.recentAlerts.length,guardianAlerts);
 for(const id of originalIds)assert.ok(State.tasks.some(t=>t.id===id),`preserved ${id}`);
 console.log('Claude compatibility, independent Codex chats, titles, timers, visibility and quiet persistent history passed.');

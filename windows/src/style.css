@@ -1384,3 +1384,10 @@ input[type="range"]::-webkit-slider-thumb {
 .pill .lbl { display:flex; flex-direction:column; }
 .pill .lbl span,.pill .lbl small { overflow:hidden; text-overflow:ellipsis; }
 .pill .lbl small { font-size:9px; font-weight:400; opacity:.65; }
+
+/* Codex chat titles need their own rows inside the existing compact card. */
+.codex-summary .who { display:grid; grid-template-columns:7px minmax(0,1fr); align-items:start; padding:0 20px 0 108px; row-gap:5px; }
+.codex-summary .who .name { white-space:normal; overflow-wrap:anywhere; line-height:14px; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; }
+.codex-summary .who .project { grid-column:2; white-space:normal; overflow-wrap:anywhere; line-height:12px; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; }
+.codex-summary .who .tool { grid-column:2; font-size:10px; }
+.codex-summary .ticker { display:none; }

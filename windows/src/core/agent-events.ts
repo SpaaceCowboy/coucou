@@ -11,6 +11,7 @@ export interface AgentEvent {
   session_id?: string;
   cwd?: string;
   title?: string;
+  internal_review?: boolean;
   snapshot_state?: "idle" | "thinking" | "working" | "question" | "error" | "finished";
   message?: string;
   state?: "thinking" | "working";

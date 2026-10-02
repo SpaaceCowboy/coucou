@@ -198,18 +198,20 @@ function buildOverview(actions: ViewActions): ViewHost {
           cardKey = "";
         }
         clear(who);
-        who.append(
-          dot(task.color, 7),
-          h("span", { class: "name", text: task.name }),
-          h("span", { class: "tool", text: sessionSourceLabel(task.source) }),
-        );
-        if (task.steps.length > 1) {
-          who.append(h("span", {
-            class: "count",
-            text: `${Math.min(task.stepIndex + 1, task.steps.length)}/${task.steps.length}`,
+        const codex = task.source === "codex";
+        tickerBody.classList.toggle("codex-summary", codex);
+        who.append(dot(task.color, 7), h("span", { class: "name", text: task.name, title: task.name }));
+        if (codex) {
+          who.append(h("span", { class: "project", text: task.sessionCwd?.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "Codex", title: task.sessionCwd || "" }));
+          const status = ({ thinking: "Thinking…", working: "Working…", question: "Waiting for you", approval: "Needs your decision", ratelimit: "Waiting for usage limit", error: "Needs attention", finished: "Finished", idle: "Idle" } as Record<string, string>)[task.state] || "Working…";
+          // Keep activity available on hover without presenting tool names as task progress.
+          who.append(h("span", { class: "tool", text: "Codex · " + status, title: task.steps.at(-1) || status }));
+        } else {
+          who.append(h("span", { class: "tool", text: sessionSourceLabel(task.source) }));
+          if (task.steps.length > 1) who.append(h("span", {
+            class: "count", text: `${Math.min(task.stepIndex + 1, task.steps.length)}/${task.steps.length}`,
           }));
         }
-        if (task.source === "codex") who.append(h("span", { class: "project", text: task.sessionCwd?.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "Codex", title: task.sessionCwd || "" }));
         ticker.sync(task);
       } else if (task) {
         const info = State.integrations[task.id];

@@ -143,6 +143,11 @@ export function handleAgentEvent(island: Island, payload: AgentEvent) {
   if (["session_completed", "session_ended", "error"].includes(payload.type)
       && payload.session_id && current?.sessionId && payload.session_id !== current.sessionId) return;
   if (payload.type === "session_metadata" || payload.type === "session_snapshot") {
+    if (payload.internal_review) {
+      State.tasks = State.tasks.filter(t => t.id !== id);
+      if (State.focusId === id) State.focusId = null;
+      State.persistSessions(); State.notify(); return;
+    }
     if (!current) return;
     if (payload.title) {
       current.title = payload.title;

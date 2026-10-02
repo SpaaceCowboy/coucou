@@ -102,7 +102,9 @@ fn scan(root: &Path, tails: &mut HashMap<PathBuf, Tail>, baseline: bool, restore
             let result = if baseline {
                 tail.baseline(&path).map(|_| {
                     if restore.contains(&tail.session_id) {
-                        if let Some(event) = tail.snapshot(&path) { emit(event); }
+                        if tail.internal_review {
+                            emit(json!({"source":"codex","type":"session_metadata","session_id":tail.session_id,"internal_review":true}));
+                        } else if let Some(event) = tail.snapshot(&path) { emit(event); }
                     }
                 })
             } else { tail.read(&path, emit) };
@@ -119,6 +121,7 @@ struct Tail {
     session_id: String,
     cwd: String,
     skipping: bool,
+    internal_review: bool,
 }
 
 // Titles are appended; the latest entry for each thread wins.
@@ -206,6 +209,7 @@ impl Tail {
         let payload = record.get("payload")?;
         let mut event = match text(record, "type") {
             "session_meta" => {
+                self.internal_review = payload.pointer("/source/subagent/other").and_then(Value::as_str) == Some("guardian");
                 self.session_id = clipped(text(payload, "id"), 128);
                 if self.session_id.is_empty() { self.session_id = clipped(text(payload, "session_id"), 128); }
                 self.cwd = clipped(text(payload, "cwd"), 2048);
@@ -247,7 +251,7 @@ impl Tail {
             },
             _ => return None,
         };
-        if self.session_id.is_empty() { return None; }
+        if self.internal_review || self.session_id.is_empty() { return None; }
         event["source"] = json!("codex");
         event["session_id"] = json!(self.session_id);
         event["cwd"] = json!(self.cwd);
@@ -317,6 +321,18 @@ mod tests {
         assert_eq!(tail.snapshot(&path).unwrap()["snapshot_state"],"finished");
         let events = Mutex::new(Vec::new());tail.read(&path,&|e|events.lock().unwrap().push(e)).unwrap();
         assert!(events.lock().unwrap().is_empty());fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn internal_guardian_reviews_never_become_chat_events() {
+        let mut tail = Tail::default();
+        assert!(tail.record(&json!({"type":"session_meta","payload":{"id":"review","source":{"subagent":{"other":"guardian"}}}})).is_none());
+        assert!(tail.internal_review);
+        for kind in ["task_started","task_complete","error"] {
+            assert!(tail.record(&json!({"type":"event_msg","payload":{"type":kind}})).is_none());
+        }
+        let mut normal = Tail::default();
+        assert!(normal.record(&json!({"type":"session_meta","payload":{"id":"chat","source":"vscode"}})).is_some());
     }
 
     #[test]
