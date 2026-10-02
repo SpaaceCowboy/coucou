@@ -3,13 +3,15 @@ export type SessionSource = "claudeCode" | "codex";
 export type AgentEventType =
   | "session_started" | "activity" | "command" | "file_edit"
   | "approval_requested" | "session_completed" | "session_ended"
-  | "notification" | "waiting" | "error";
+  | "notification" | "waiting" | "error" | "session_metadata" | "session_snapshot";
 
 export interface AgentEvent {
   source: SessionSource;
   type: AgentEventType;
   session_id?: string;
   cwd?: string;
+  title?: string;
+  snapshot_state?: "idle" | "thinking" | "working" | "question" | "error" | "finished";
   message?: string;
   state?: "thinking" | "working";
   tool_name?: string;

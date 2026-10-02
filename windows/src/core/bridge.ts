@@ -5,6 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import type { ClickupProposal, ClickupSetup } from "../views/clickup";
 import type { Settings } from "./state";
 
 export const IS_TAURI =
@@ -29,9 +30,13 @@ export interface BootInfo {
 }
 
 export const Bridge = {
+  clickupSetup: (workspace?: string) => callOrThrow<ClickupSetup>("clickup_setup", { workspace: workspace || null }),
+  clickupSend: (query: string, localTime: string, selectedTask: string | null = null) => callOrThrow<{text: string; proposal: ClickupProposal | null; choices: {id:string;name:string;list:string}[]}>("clickup_send", {query, localTime, selectedTask}),
+  clickupConfirm: (id: number) => callOrThrow<{message: string; url?: string}>("clickup_confirm", {id}),
+  clickupCancel: (id: number) => callOrThrow<void>("clickup_cancel", {id}),
   boot: () => call<BootInfo>("boot"),
   /** Starts passive Codex monitoring after the island subscribes. */
-  startCodexMonitor: () => call<void>("start_codex_monitor"),
+  startCodexMonitor: (sessionIds: string[]) => call<void>("start_codex_monitor", {sessionIds}),
 
   saveSettings: (settings: Settings) => call<void>("save_settings", { settings }),
 

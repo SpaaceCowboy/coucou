@@ -21,6 +21,7 @@ async function main() {
     State.settings = { ...State.settings, ...boot.settings };
   }
   island.applySettings();
+  State.restoreSessions();
   State.loadIntegrationTasks();
 
   await onEvent<{ x: number; y: number }>("cursor", ({ x, y }) => island.onCursor(x, y));

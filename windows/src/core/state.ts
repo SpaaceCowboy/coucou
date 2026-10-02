@@ -3,7 +3,7 @@
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
 
-export type AgentSource = "claudeCode" | "codex" | "n8n";
+export type AgentSource = "claudeCode" | "codex" | "n8n" | "clickup";
 export type PillBadge = "approval" | "finished" | "error";
 
 export interface AgentTask {
@@ -20,6 +20,15 @@ export interface AgentTask {
   pillBadge?: PillBadge | null;
   sessionCwd?: string | null;
   sessionId?: string | null;
+  title?: string;
+  updatedAt?: number;
+  dismissed?: boolean;
+}
+
+export interface RecentAlert {
+  id: string; taskId: string; sessionId?: string | null; cwd?: string | null;
+  source: AgentSource; kind: "finished" | "error" | "approval";
+  title: string; message: string; time: number;
 }
 
 export interface ApprovalInfo {
@@ -93,6 +102,9 @@ export interface Settings {
   hooksInstalled: boolean;
   /** Claude model used by the chat. */
   model: string;
+  showIntegrationPills: boolean;
+  clickupWorkspace: string;
+  clickupList: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -107,6 +119,9 @@ export const DEFAULT_SETTINGS: Settings = {
   autostart: false,
   hooksInstalled: false,
   model: "claude-opus-5",
+  showIntegrationPills: false,
+  clickupWorkspace: "",
+  clickupList: "",
 };
 
 type Listener = () => void;
@@ -117,6 +132,8 @@ class AppState {
 
   tasks: AgentTask[] = [];
   focusId: string | null = null;
+  recentAlerts: RecentAlert[] = [];
+  historyStorageError = "";
 
   stateOverride: BotStateName | null = null;
 
@@ -158,15 +175,72 @@ class AppState {
   }
 
   get focusTask(): AgentTask | null {
-    return this.tasks.find((t) => t.id === this.focusId) ?? this.tasks[0] ?? null;
+    return this.visibleTasks.find((t) => t.id === this.focusId) ?? this.visibleTasks[0] ?? null;
   }
 
   get effectiveState(): BotStateName {
     return this.stateOverride ?? this.focusTask?.state ?? "idle";
   }
 
+  get visibleTasks(): AgentTask[] {
+    const chats = this.tasks.filter(t => t.source === "codex" && !t.dismissed)
+      .sort((a,b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+    const finished = chats.filter(t => t.state === "finished" || t.state === "idle").slice(0,5);
+    return this.tasks.filter(t => t.source === "clickup"
+      || (t.source === "codex" ? !t.dismissed && (finished.includes(t) || !["finished","idle"].includes(t.state))
+        : this.settings.showIntegrationPills || (t.source === "claudeCode" && (t.state !== "idle" || !!t.pillBadge || !!this.pendingApproval))))
+      .sort((a,b) => Number(!!b.pillBadge && b.pillBadge !== "finished") - Number(!!a.pillBadge && a.pillBadge !== "finished")
+        || Number(b.source === "codex") - Number(a.source === "codex") || (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+  }
+
   get otherTasks(): AgentTask[] {
-    return this.tasks.filter((t) => t.id !== this.focusId);
+    return this.visibleTasks.filter(t => t.id !== this.focusTask?.id);
+  }
+
+  persistSessions() {
+    try {
+      localStorage.setItem("coucou-sessions", JSON.stringify({
+        tasks: this.visibleTasks.filter(t => t.source === "codex").map(t => ({...t, steps:t.steps.slice(-1),stepIndex:0})), alerts: this.recentAlerts,
+      }));
+      this.historyStorageError = "";
+    } catch (err) { this.historyStorageError = "Recent history could not be saved. Free up local storage or dismiss older alerts."; console.error("Could not save recent chats/alerts", err); }
+  }
+
+  restoreSessions() {
+    try {
+      const saved = JSON.parse(localStorage.getItem("coucou-sessions") ?? "{}");
+      if (Array.isArray(saved.tasks)) this.tasks.push(...saved.tasks.filter((t: AgentTask) =>
+        t.source === "codex" && typeof t.sessionId === "string" && t.id === 'codex:' + t.sessionId
+        && typeof t.name === "string" && Array.isArray(t.steps)
+        && ["idle","thinking","working","question","ratelimit","error","finished"].includes(t.state)));
+      if (Array.isArray(saved.alerts)) this.recentAlerts = saved.alerts.filter((a: RecentAlert) =>
+        typeof a.id === "string" && typeof a.taskId === "string" && typeof a.title === "string"
+        && typeof a.message === "string" && typeof a.time === "number" && ["finished","error","approval"].includes(a.kind));
+    } catch (err) { console.error("Could not restore recent chats/alerts", err); }
+  }
+
+  recordAlert(id: string, kind: RecentAlert["kind"], message: string) {
+    const t = this.tasks.find(t => t.id === id);
+    if (!t) return;
+    const last = this.recentAlerts[0];
+    if (last?.taskId === id && last.kind === kind && last.message === message && Date.now() - last.time < 2000) return;
+    const time = Date.now();
+    this.recentAlerts.unshift({ id: time + ':' + Math.random().toString(36).slice(2), taskId: id,
+      sessionId: t.sessionId, cwd: t.sessionCwd, source: t.source, kind, title: t.name, message: message.slice(0,500), time });
+    this.persistSessions();
+  }
+
+  dismissAlert(id: string) {
+    this.recentAlerts = this.recentAlerts.filter(a => a.id !== id);
+    this.persistSessions(); this.notify();
+  }
+
+  dismissChat(id: string) {
+    const t = this.tasks.find(t => t.id === id);
+    if (!t || t.source !== "codex" || !["finished","idle"].includes(t.state)) return;
+    t.dismissed = true;
+    if (this.focusId === id) this.focusId = null;
+    this.persistSessions(); this.notify();
   }
 
   setFocus(id: string) {
@@ -212,7 +286,9 @@ class AppState {
     // Keep the declared order so pills never shuffle.
     const order = INTEGRATION_AGENTS.map((t) => t.id);
     this.tasks.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
-    if (!this.focusId) this.focusId = "integration_claude";
+    if (!this.tasks.some(t => t.id === "integration_clickup"))
+      this.tasks.push(task("integration_clickup", "ClickUp", "#AF78FF", "clickup"));
+    if (!this.visibleTasks.some(t => t.id === this.focusId)) this.focusId = this.visibleTasks[0]?.id ?? null;
     this.notify();
   }
 

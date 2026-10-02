@@ -52,7 +52,7 @@ function handle(island: Island, update: IntegrationUpdate) {
   };
 
   const event = update.event;
-  if (event) {
+  if (event && State.settings.showIntegrationPills) {
     const task = State.tasks.find((t) => t.id === update.id);
     if (task) {
       task.state = event.success ? "finished" : "error";

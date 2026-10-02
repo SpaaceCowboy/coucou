@@ -1,6 +1,7 @@
 // Coucou for Windows — app wiring and the commands the island calls.
 
 mod claude;
+mod clickup;
 mod codex;
 mod files;
 mod hooks;
@@ -197,8 +198,30 @@ fn set_paused(paused: bool) {
 }
 
 #[tauri::command]
-fn start_codex_monitor(app: AppHandle) {
-    codex::start(app);
+fn start_codex_monitor(app: AppHandle, session_ids: Vec<String>) {
+    codex::start(app, session_ids);
+}
+
+#[tauri::command]
+async fn clickup_setup(workspace: Option<String>) -> Result<serde_json::Value, String> {
+    clickup::setup(workspace).await
+}
+
+#[tauri::command]
+async fn clickup_send(shared: State<'_, Shared>, clickup: State<'_, clickup::Clickup>, query: String, local_time: String, selected_task: Option<String>) -> Result<clickup::Reply, String> {
+    let settings = shared.settings.lock().unwrap().clone();
+    clickup::send(&clickup, &settings, query, local_time, selected_task).await
+}
+
+#[tauri::command]
+async fn clickup_confirm(shared: State<'_, Shared>, clickup: State<'_, clickup::Clickup>, id: u64) -> Result<serde_json::Value, String> {
+    let settings = shared.settings.lock().unwrap().clone();
+    clickup::confirm(&clickup, &settings, id).await
+}
+
+#[tauri::command]
+async fn clickup_cancel(clickup: State<'_, clickup::Clickup>, id: u64) -> Result<(), String> {
+    clickup::cancel(&clickup, id).await
 }
 
 // ── Claude Code hooks ─────────────────────────────────────────────────────────
@@ -397,8 +420,13 @@ pub fn run() {
         })
         .manage(Pending::default())
         .manage(Chat::default())
+        .manage(clickup::Clickup::default())
         .invoke_handler(tauri::generate_handler![
             boot,
+            clickup_setup,
+            clickup_send,
+            clickup_confirm,
+            clickup_cancel,
             start_codex_monitor,
             save_settings,
             set_collapsed,

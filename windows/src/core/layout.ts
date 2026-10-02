@@ -5,6 +5,8 @@
 export type IslandMode = "hidden" | "compact" | "expanded";
 
 export type IslandViewName =
+  | "clickup"
+  | "history"
   | "overview"
   | "empty"
   | "approval"
@@ -67,6 +69,8 @@ export const WAKE_STRIP_W = 240;
 export const WAKE_STRIP_H = 6;
 
 export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
+  clickup: { height: 300, botX: 42, botY: 92, botDiameter: 40, agentMode: "none" },
+  history: { height: 300, botX: 42, botY: 92, botDiameter: 40, agentMode: "none" },
   overview: { height: 160, botX: 68, botY: null, botDiameter: 58, agentMode: "pills" },
   empty: { height: 160, botX: 70, botY: null, botDiameter: 62, agentMode: "none" },
   approval: { height: 160, botX: 62, botY: null, botDiameter: 56, agentMode: "column" },

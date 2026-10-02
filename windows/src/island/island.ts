@@ -113,8 +113,10 @@ export class Island {
     const actions: ViewActions = {
       setView: (v) => this.setView(v),
       collapse: () => this.collapse(),
+      reveal: () => this.reveal(),
       setFocus: (id) => {
         State.setFocus(id);
+        if (id === "integration_clickup") this.setView("clickup");
         Sound.play("blip");
       },
       openSession: () => this.openSession(),
@@ -130,7 +132,8 @@ export class Island {
           integration_notion: "https://notion.so",
           integration_calcom: "https://app.cal.com/bookings",
         };
-        if (task.source === "claudeCode" || task.source === "codex") this.openSession();
+        if (task.source === "clickup") this.setView("clickup");
+        else if (task.source === "claudeCode" || task.source === "codex") this.openSession();
         else if (task.id === "integration_n8n") void Bridge.openN8n();
         else if (urls[task.id]) void Bridge.openUrl(urls[task.id]);
       },
@@ -842,11 +845,11 @@ export class Island {
     // The chat is the only view with a text field, so it is the only time the
     // island is allowed to take keyboard focus.
     if (this.lastSyncedView !== State.view) {
-      const wasChat = this.lastSyncedView === "prompt";
+      const wasChat = this.lastSyncedView === "prompt" || this.lastSyncedView === "clickup";
       this.lastSyncedView = State.view;
-      if (State.view === "prompt") {
+      if (State.view === "prompt" || State.view === "clickup") {
         void Bridge.focusWindow(true);
-        window.setTimeout(() => this.views.get("prompt")?.focus?.(), 120);
+        window.setTimeout(() => this.views.get(State.view)?.focus?.(), 120);
       } else if (wasChat) {
         void Bridge.focusWindow(false);
       }

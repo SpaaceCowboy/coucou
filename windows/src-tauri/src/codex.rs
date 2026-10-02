@@ -1,5 +1,5 @@
 // Passive Codex adapter. Read rollouts only; never launch Codex or answer approvals.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::windows::ffi::OsStrExt;
@@ -16,7 +16,7 @@ use windows::Win32::Storage::FileSystem::{
     FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME,
     FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE,
 };
-use windows::Win32::System::Threading::{WaitForSingleObject, INFINITE};
+use windows::Win32::System::Threading::{WaitForSingleObject};
 
 static STARTED: AtomicBool = AtomicBool::new(false);
 const MAX_LINE: u64 = 1024 * 1024;
@@ -29,13 +29,17 @@ pub fn chat_url(session_id: &str) -> Option<String> {
     valid.then(|| format!("codex://threads/{session_id}"))
 }
 
-pub fn start(app: AppHandle) {
-    if STARTED.swap(true, Ordering::Relaxed) { return; }
-    let home = std::env::var_os("CODEX_HOME").map(PathBuf::from).or_else(|| {
+pub fn home() -> Option<PathBuf> {
+    std::env::var_os("CODEX_HOME").map(PathBuf::from).or_else(|| {
         std::env::var_os("USERPROFILE").map(|p| PathBuf::from(p).join(".codex"))
-    });
-    let Some(home) = home else { return };
+    })
+}
+
+pub fn start(app: AppHandle, session_ids: Vec<String>) {
+    if STARTED.swap(true, Ordering::Relaxed) { return; }
+    let Some(home) = home() else { return };
     std::thread::spawn(move || {
+        let restore: HashSet<String> = session_ids.into_iter().collect();
         let root = home.join("sessions");
         // Codex may not have been installed/run yet. No history or settings writes.
         while !root.is_dir() { std::thread::sleep(Duration::from_secs(5)); }
@@ -50,12 +54,33 @@ pub fn start(app: AppHandle) {
             Err(err) => { crate::log::line(format!("Codex monitor: {err}")); return; }
         };
         let mut tails = HashMap::new();
-        let emit = |event| { let _ = app.emit_to(crate::island::WINDOW_LABEL, "agent", event); };
-        scan(&root, &mut tails, true, &emit);
-        // Native notification sleeps until a write, even while the island is hidden.
-        while unsafe { WaitForSingleObject(handle, INFINITE) } == WAIT_OBJECT_0 {
-            if unsafe { FindNextChangeNotification(handle) }.is_err() { break; }
-            scan(&root, &mut tails, false, &emit);
+        let mut titles = HashMap::new();
+        let mut index_stamp = None;
+        loop {
+            let path = home.join("session_index.jsonl");
+            let stamp = fs::metadata(&path).ok().map(|m| (m.len(), m.modified().ok()));
+            if stamp != index_stamp {
+                let next = read_titles(&path);
+                for (id, title) in &next {
+                    if titles.get(id) != Some(title) {
+                        let _ = app.emit_to(crate::island::WINDOW_LABEL, "agent", json!({
+                            "source":"codex", "type":"session_metadata", "session_id":id, "title":title
+                        }));
+                    }
+                }
+                titles = next; index_stamp = stamp;
+            }
+            let emit = |mut event: Value| {
+                if event["cwd"].as_str().is_some_and(|cwd| Path::new(cwd) == crate::settings::local_dir().join("clickup")) { return; }
+                if let Some(title) = titles.get(text(&event, "session_id")) { event["title"] = json!(title); }
+                let _ = app.emit_to(crate::island::WINDOW_LABEL, "agent", event);
+            };
+            if tails.is_empty() { scan(&root, &mut tails, true, &restore, &emit); }
+            let result = unsafe { WaitForSingleObject(handle, 3000) };
+            if result == WAIT_OBJECT_0 {
+                if unsafe { FindNextChangeNotification(handle) }.is_err() { break; }
+                scan(&root, &mut tails, false, &restore, &emit);
+            } else if result.0 != 258 { break; }
         }
         unsafe { let _ = FindCloseChangeNotification(handle); }
         crate::log::line("Codex monitor stopped");
@@ -63,18 +88,24 @@ pub fn start(app: AppHandle) {
 }
 
 // ponytail: scan file metadata on writes; use per-file notifications if history grows costly.
-fn scan(root: &Path, tails: &mut HashMap<PathBuf, Tail>, baseline: bool, emit: &impl Fn(Value)) {
+fn scan(root: &Path, tails: &mut HashMap<PathBuf, Tail>, baseline: bool, restore: &HashSet<String>, emit: &impl Fn(Value)) {
     let Ok(entries) = fs::read_dir(root) else { return };
     for entry in entries.flatten() {
         let Ok(kind) = entry.file_type() else { continue };
         let path = entry.path();
         if kind.is_dir() {
-            scan(&path, tails, baseline, emit);
+            scan(&path, tails, baseline, restore, emit);
         } else if kind.is_file()
             && path.extension().is_some_and(|ext| ext == "jsonl")
             && entry.file_name().to_string_lossy().starts_with("rollout-") {
             let tail = tails.entry(path.clone()).or_default();
-            let result = if baseline { tail.baseline(&path) } else { tail.read(&path, emit) };
+            let result = if baseline {
+                tail.baseline(&path).map(|_| {
+                    if restore.contains(&tail.session_id) {
+                        if let Some(event) = tail.snapshot(&path) { emit(event); }
+                    }
+                })
+            } else { tail.read(&path, emit) };
             if let Err(err) = result {
                 crate::log::line(format!("Codex rollout read: {err}"));
             }
@@ -90,7 +121,49 @@ struct Tail {
     skipping: bool,
 }
 
+// Titles are appended; the latest entry for each thread wins.
+fn read_titles(path: &Path) -> HashMap<String, String> {
+    let mut titles = HashMap::new();
+    if let Ok(file) = File::open(path) {
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            if let Ok(v) = serde_json::from_str::<Value>(&line) {
+                let id = text(&v, "id"); let title = text(&v, "thread_name");
+                if chat_url(id).is_some() && !title.is_empty() { titles.insert(id.to_owned(), clipped(title, 160)); }
+            }
+        }
+    }
+    titles
+}
+
 impl Tail {
+    fn snapshot(&mut self, path: &Path) -> Option<Value> {
+        // ponytail: inspect only the last 1 MiB at startup; restore saved state if a single record exceeds this.
+        let mut file = File::open(path).ok()?;
+        let length = file.metadata().ok()?.len();
+        let start = length.saturating_sub(MAX_LINE);
+        file.seek(SeekFrom::Start(start)).ok()?;
+        let mut reader = BufReader::new(file);
+        if start > 0 { let mut partial = String::new(); let _ = reader.read_line(&mut partial); }
+        let mut state = None;
+        for line in reader.lines().map_while(Result::ok) {
+            if let Ok(record) = serde_json::from_str::<Value>(&line) {
+                if let Some(event) = self.record(&record) {
+                    state = match text(&event, "type") {
+                        "session_started" => Some("thinking"),
+                        "activity" | "command" | "file_edit" => Some("working"),
+                        "session_completed" => Some("finished"),
+                        "session_ended" => Some("idle"),
+                        "waiting" => Some("question"),
+                        "error" => Some(if event["fatal"] == false { "working" } else { "error" }),
+                        _ => state,
+                    };
+                }
+            }
+        }
+        state.map(|state| json!({"source":"codex","type":"session_snapshot", "session_id":self.session_id,
+            "cwd":self.cwd,"snapshot_state":state}))
+    }
+
     fn baseline(&mut self, path: &Path) -> io::Result<()> {
         let file = File::open(path)?;
         let length = file.metadata()?.len();
@@ -232,6 +305,19 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::sync::Mutex;
+
+    #[test]
+    fn titles_use_latest_entry_and_snapshots_are_silent() {
+        let path = std::env::temp_dir().join(format!("coucou-title-test-{}.jsonl",std::process::id()));
+        let id = "01a0fb98-fb4b-7491-9c9f-96e6ee07ab9e";
+        fs::write(&path,format!("{}\ninvalid\n{}\n",json!({"id":id,"thread_name":"Old"}),json!({"id":id,"thread_name":"New"}))).unwrap();
+        assert_eq!(read_titles(&path).get(id).unwrap(),"New");
+        fs::write(&path,format!("{}\n{}\n",json!({"type":"session_meta","payload":{"id":id,"cwd":"C:/repo"}}),json!({"type":"event_msg","payload":{"type":"task_complete"}}))).unwrap();
+        let mut tail = Tail::default(); tail.baseline(&path).unwrap();
+        assert_eq!(tail.snapshot(&path).unwrap()["snapshot_state"],"finished");
+        let events = Mutex::new(Vec::new());tail.read(&path,&|e|events.lock().unwrap().push(e)).unwrap();
+        assert!(events.lock().unwrap().is_empty());fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn chat_links_accept_only_thread_uuids() {

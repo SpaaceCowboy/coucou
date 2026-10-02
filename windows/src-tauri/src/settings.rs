@@ -20,6 +20,12 @@ pub struct Settings {
     /// Defaulted explicitly so a settings.json written by an older build still loads.
     #[serde(default = "default_model")]
     pub model: String,
+    #[serde(default)]
+    pub show_integration_pills: bool,
+    #[serde(default)]
+    pub clickup_workspace: String,
+    #[serde(default)]
+    pub clickup_list: String,
 }
 
 fn default_model() -> String {
@@ -43,6 +49,9 @@ impl Default for Settings {
             autostart: false,
             hooks_installed: false,
             model: default_model(),
+            show_integration_pills: false,
+            clickup_workspace: String::new(),
+            clickup_list: String::new(),
         }
     }
 }
@@ -84,4 +93,19 @@ pub fn save(settings: &Settings) -> std::io::Result<()> {
     let json = serde_json::to_vec_pretty(settings)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(settings_path(), json)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn old_preferences_keep_their_values() {
+        let mut value = serde_json::to_value(Settings::default()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("showIntegrationPills"); object.remove("clickupWorkspace"); object.remove("clickupList");
+        object.insert("soundVolume".into(),serde_json::json!(0.07));
+        let loaded: Settings = serde_json::from_value(value).unwrap();
+        assert_eq!(loaded.sound_volume,0.07); assert!(!loaded.show_integration_pills);
+        assert!(loaded.clickup_list.is_empty()); assert_eq!(loaded.active_integrations.len(),4);
+    }
 }

@@ -358,6 +358,58 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
   return h("section", {}, h("h2", {}, h("span", { text: "Integrations" })), note, list);
 }
 
+function clickupSection(): HTMLElement {
+  const token = h("input", {type:"password",placeholder:"ClickUp personal API token",autocomplete:"off",style:"flex:1;min-width:0","aria-label":"ClickUp token"}) as HTMLInputElement;
+  const feedback = h("div", {class:"hint",text:"Connect ClickUp, then choose a workspace and default list. Commands use your Codex ChatGPT sign-in."});
+  const workspace = h("select", {"aria-label":"ClickUp workspace"}) as HTMLSelectElement;
+  const list = h("select", {"aria-label":"ClickUp default list"}) as HTMLSelectElement;
+  const connect = h("button", {class:"primary",text:"Connect / Refresh"});
+  const saveToken = h("button",{text:"Save token"});
+  const remove = h("button",{class:"danger",text:"Disconnect"});
+  const option = (value:string,text:string) => h("option",{value,text});
+  workspace.append(option("","Choose workspace")); list.append(option("","Choose default list"));
+  async function loadLists() {
+    list.disabled = true; feedback.textContent = "Loading ClickUp lists…";
+    try {
+      const data = await Bridge.clickupSetup(workspace.value);
+      clear(list); list.append(option("","Choose default list"));
+      for (const item of data.lists) list.append(option(item.id,item.name));
+      list.value = settings.clickupList;
+      feedback.textContent = data.lists.length ? "Choose a default list. Every create, edit and delete requires your review." : "No accessible lists in this workspace.";
+    } catch (err) { feedback.textContent = String(err); }
+    finally { list.disabled = false; }
+  }
+  connect.onclick = async () => {
+    connect.disabled = true;
+    try {
+      const data = await Bridge.clickupSetup();
+      clear(workspace); workspace.append(option("","Choose workspace"));
+      for (const item of data.workspaces) workspace.append(option(item.id,item.name));
+      workspace.value = settings.clickupWorkspace;
+      if (workspace.value) await loadLists();
+      else feedback.textContent = "Choose your ClickUp workspace.";
+    } catch (err) { feedback.textContent = String(err); }
+    finally { connect.disabled = false; }
+  };
+  saveToken.onclick = async () => {
+    if (!token.value.trim()) return;
+    saveToken.disabled = true;
+    try { await Bridge.secretSet("clickup-api-token",token.value.trim()); token.value=""; token.placeholder="Token saved securely"; connect.click(); }
+    catch (err) { feedback.textContent=String(err); }
+    finally { saveToken.disabled=false; }
+  };
+  remove.onclick = async () => {
+    try { await Bridge.secretClear("clickup-api-token"); settings.clickupWorkspace=""; settings.clickupList=""; await save();
+      clear(workspace);workspace.append(option("","Choose workspace"));clear(list);list.append(option("","Choose default list"));token.placeholder="ClickUp personal API token";feedback.textContent="Disconnected.";
+    } catch (err) { feedback.textContent=String(err); }
+  };
+  workspace.onchange = async () => { settings.clickupWorkspace=workspace.value;settings.clickupList="";await save();if(workspace.value) await loadLists(); };
+  list.onchange = () => { settings.clickupList=list.value;void save(); };
+  void Bridge.secretPresent("clickup-api-token").then(present=>{if(present){token.placeholder="Token stored securely";connect.click();}});
+  return h("section",{},h("h2",{text:"ClickUp"}),feedback,h("div",{class:"row"},token,saveToken,remove),
+    h("div",{class:"row"},workspace,connect),h("div",{class:"row"},list));
+}
+
 // ── General section ───────────────────────────────────────────────────────────
 
 function generalSection(): HTMLElement {
@@ -396,6 +448,10 @@ function generalSection(): HTMLElement {
     "section",
     {},
     h("h2", {}, h("span", { text: "General" })),
+    h("div", { class: "row" },
+      h("label", { text: "Show integration pills" }),
+      toggle(settings.showIntegrationPills, v => { settings.showIntegrationPills = v; void save(); }),
+    ),
     h("div", { class: "row" },
       h("label", { text: "Sound" }),
       toggle(settings.soundEnabled, (v) => { settings.soundEnabled = v; void save(); }),
@@ -443,6 +499,7 @@ async function main() {
     h("h1", {}, h("span", { text: "Coucou" }), h("span", { class: "version", text: version })),
     claudeSection(status),
     apiSection(hasKey),
+    clickupSection(),
     integrationsSection(present),
     generalSection(),
     h("div", {

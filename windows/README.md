@@ -70,16 +70,15 @@ It works from any terminal — Windows Terminal, PowerShell, VS Code, Git Bash.
 
 ## Codex sessions
 
-Codex activity appears automatically in a **Codex** pill using the same Mochi,
+Each Codex chat appears automatically as its own **Mochi**, using the same
 session ticker, completion sounds and error views as Claude Code. Claude hooks,
 approvals, chat, file drops and service integrations continue to work as before.
 
 The Windows app passively watches local `rollout-*.jsonl` files under
 `%CODEX_HOME%\sessions`, or `%USERPROFILE%\.codex\sessions` by default.
 It detects new sessions/turns, commands, edits and completion/interruption events
-when those records are available. It never changes Codex configuration, starts
-Codex, reads authentication files, or answers Codex approvals. No API key is
-needed for monitoring.
+when those records are available. Monitoring never changes Codex configuration
+or answers Codex approvals. No API key is needed for monitoring.
 
 **Open chat** on a completed Codex task (or the overview arrow) opens that
 session in the installed Codex desktop app using its registered `codex://` link.
@@ -92,18 +91,48 @@ calls are detected; live approval/error events are handled if present, but
 Codex does not reliably persist them in rollout files, so some blockers remain
 visible only inside Codex. Codex approvals remain inside Codex.
 
-Existing history is skipped at startup; a session already running appears when
-it next writes activity. One Codex pill shows the latest active session. Rollout
+Old events never replay notifications at startup. Saved chat states are reconciled
+quietly; previously unseen running chats appear on their next activity. Chat names
+come from `session_index.jsonl`, with project folders as the fallback. Working and
+unresolved chats stay visible alongside the five most recent finished chats.
+Dismiss finished Mochis with ×. The clock tab holds attention alerts until you
+dismiss them, even after restarting. Settings → Show integration pills restores
+the existing service pills; Claude approvals always remain available. Rollout
 formats vary by Codex version, so unknown records are ignored; command/edit
 detail depends on the records that version writes. A completed turn is shown as
 finished, but an idle CLI process closing has no reliable event in this adapter.
 Oversized records (over 1 MiB) are skipped, and the directory watcher scans file
-metadata on changes. Native notifications sleep when there are no writes.
+metadata on changes. Native notifications sleep between writes; chat-title changes are checked every three seconds.
 WSL/remote sessions are only visible if their rollouts are in the watched folder.
 The macOS implementation is unchanged.
 
 Run the focused adapter/state checks with `npm run test:agents`, and the Windows
 backend and existing hook tests with `cargo test --workspace`.
+
+## ClickUp commands
+
+The ClickUp Mochi opens a command box inside Coucou. In **Settings → ClickUp**,
+save a personal API token, choose a workspace, and select a default list. Tokens
+stay in Windows Credential Manager. Install Codex and sign in with ChatGPT;
+ClickUp commands use that existing sign-in and the available default Codex model.
+
+Ask to find, create, edit or delete a task. Supported fields are name, description,
+status, priority, assignees and due date (shown in your computer's timezone).
+Ambiguous searches offer exact task choices. Every write requires **Confirm change**
+or **Confirm delete** after a preview; **Cancel** performs no write. Tasks changed
+since their preview require a fresh review. Uncertain write results are not retried.
+
+This command view starts a dedicated, ephemeral Codex app-server conversation on
+demand, with read-only permissions and inherited connectors, MCP servers, plugins,
+shell tools and user hooks disabled for that connection. It does not edit global
+Codex settings. Experimental tool support is checked at connection time. Missing
+credentials, unsupported versions, permissions, rate limits and network errors
+appear in the command view. Bulk actions and custom fields are not included.
+
+Run the optional signed-in connection check with:
+`cargo test installed_codex_supports_isolated_clickup_tools -- --ignored`.
+It makes a small model request and performs no ClickUp write. Live ClickUp writes
+still need a connected account and your review in the app.
 
 ## Chat and keys
 

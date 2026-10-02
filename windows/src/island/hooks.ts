@@ -10,6 +10,7 @@ import type { Island } from "./island";
 
 import { claudeEvent, type AgentEvent, type ClaudeHookPayload } from "../core/agent-events";
 
+let lastUpdate = 0;
 const settleTimers = new Map<string, number>();
 
 /** Clears the approval card if no decision was made before the hook gave up. */
@@ -94,7 +95,6 @@ function approvalTarget(tool: string, input: Record<string, unknown>): string {
 function upsert(id: string, event: AgentEvent, projectName: string, cwd: string) {
   let t = State.tasks.find((x) => x.id === id);
   if (!t && event.source === "codex") {
-    // ponytail: one Codex pill shows the latest session; split by session if needed.
     t = { id, name: "Codex", color: "#F5F6F8", source: "codex", isIntegration: true,
       state: "idle", steps: [], stepIndex: 0 };
     State.tasks.push(t);
@@ -106,7 +106,10 @@ function upsert(id: string, event: AgentEvent, projectName: string, cwd: string)
     t.pillBadge = null;
   }
   if (event.session_id) t.sessionId = event.session_id;
-  t.name = projectName;
+  if (event.title) t.title = event.title;
+  t.name = t.title || projectName;
+  t.updatedAt = lastUpdate = Math.max(Date.now(), lastUpdate + 1);
+  if (!["session_metadata","session_snapshot"].includes(event.type)) t.dismissed = false;
   if (cwd) t.sessionCwd = cwd;
 }
 
@@ -127,17 +130,32 @@ export async function registerHookHandlers(island: Island) {
     if (event) handleAgentEvent(island, event);
   });
   await onEvent<AgentEvent>("agent", (event) => handleAgentEvent(island, event));
-  await Bridge.startCodexMonitor();
+  await Bridge.startCodexMonitor(State.tasks.filter(t => t.source === "codex").map(t => t.sessionId!).filter(Boolean));
 }
 
 export function handleAgentEvent(island: Island, payload: AgentEvent) {
   if (payload.source !== "claudeCode" && payload.source !== "codex") return;
   // Codex monitoring is observational; only the existing Claude relay can approve.
   if (payload.type === "approval_requested" && payload.source !== "claudeCode") return;
-  const id = payload.source === "codex" ? "integration_codex" : "integration_claude";
+  if (payload.source === "codex" && !payload.session_id) return;
+  const id = payload.source === "codex" ? `codex:${payload.session_id}` : "integration_claude";
   const current = State.tasks.find((t) => t.id === id);
   if (["session_completed", "session_ended", "error"].includes(payload.type)
       && payload.session_id && current?.sessionId && payload.session_id !== current.sessionId) return;
+  if (payload.type === "session_metadata" || payload.type === "session_snapshot") {
+    if (!current) return;
+    if (payload.title) {
+      current.title = payload.title;
+      current.name = payload.title;
+      for (const a of State.recentAlerts) if (a.taskId === id) a.title = payload.title;
+    }
+    if (payload.cwd) current.sessionCwd = payload.cwd;
+    if (payload.snapshot_state) {
+      current.state = payload.snapshot_state;
+      current.pillBadge = ["thinking","working","idle"].includes(current.state) ? null : current.pillBadge;
+    }
+    State.persistSessions(); State.notify(); return;
+  }
   if (State.paused) {
     // Silence here used to cost Claude Code nearly two minutes: the relay waited
     // for a decision from an island that had already decided not to look. Say so,
@@ -157,11 +175,12 @@ export function handleAgentEvent(island: Island, payload: AgentEvent) {
   const cwd = payload.cwd ?? "";
   const raw = lastPathComponent(cwd);
   const projectName = aliasProjectName(raw || "Session");
-  const focused = State.focusId === id;
+  const focused = State.focusTask?.id === id;
 
   // Routine activity updates the ticker quietly. Only attention events surface.
   const attention = (view: Parameters<Island["alert"]>[0], badge: "approval" | "finished" | "error") => {
-    if (State.pendingApproval) {
+    State.recordAlert(id, badge, payload.message || State.tasks.find(t => t.id === id)?.steps.at(-1) || (badge === "finished" ? "Task finished" : "Needs attention"));
+    if (State.pendingApproval || (State.mode === "expanded" && State.view === "clickup")) {
       if (id !== "integration_claude") State.setPillBadge(id, badge);
       return; // Keep the existing Claude decision card available until answered.
     }
@@ -230,7 +249,7 @@ export function handleAgentEvent(island: Island, payload: AgentEvent) {
       if (payload.message) State.appendStep(id, payload.message.slice(0, 60));
       Sound.play("finish");
       attention("finished", "finished");
-      settleTimers.set(id, window.setTimeout(() => {
+      if (payload.source !== "codex") settleTimers.set(id, window.setTimeout(() => {
         settleTimers.delete(id);
         State.updateTask(id, "idle");
         State.setPillBadge(id, null);
@@ -310,5 +329,6 @@ export function handleAgentEvent(island: Island, payload: AgentEvent) {
     default:
       break;
   }
+  State.persistSessions();
   State.notify();
 }

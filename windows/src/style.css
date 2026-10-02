@@ -1358,3 +1358,29 @@ input[type="range"]::-webkit-slider-thumb {
 .int-card.detail {
   padding-top: 8px;
 }
+
+/* Chat Mochis and utility views reuse the island's existing cards. */
+.pills { overflow-y:auto; align-content:start; padding:8px; grid-auto-rows:38px; }
+.overview > .right { min-width:0; }
+.pill { height:38px; min-width:0; }
+.pill .lbl { position:static; text-align:left; padding:0 5px; flex:1; min-width:0; }
+.pill .mini { flex-shrink:0; }
+.dismiss-chat { border:0; background:none; color:var(--dim-2); padding:2px 5px; }
+.who { flex-wrap:wrap; row-gap:2px; }
+.who .project { flex-basis:100%; font-size:10px; color:var(--dim-3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.utility-body { margin-left:76px; padding:12px 14px 10px 0; height:100%; display:flex; flex-direction:column; gap:8px; min-height:0; }
+.history-list,.clickup-messages { flex:1; min-height:0; overflow:auto; }
+.history-row { display:flex; align-items:center; gap:8px; padding:8px 0; border-bottom:1px solid #ffffff12; }
+.history-row .grow { min-width:0; overflow-wrap:anywhere; }
+.history-row .sub { white-space:normal; }
+.history-row small { color:var(--dim-3); font-size:10px; }
+.clickup-line { padding:4px 0; font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.clickup-line.user { color:var(--dim-2); }
+.clickup-review { border:1px solid #AF78FF55; border-radius:10px; padding:8px; margin:6px 0; }
+.clickup-review pre { font:11px var(--font); margin:4px 0; white-space:pre-wrap; overflow-wrap:anywhere; }
+.clickup-compose { display:flex; gap:6px; }
+.clickup-compose input { min-width:0; flex:1; border:1px solid #ffffff26; border-radius:12px; padding:8px; background:#ffffff0a; color:var(--ink); }
+
+.pill .lbl { display:flex; flex-direction:column; }
+.pill .lbl span,.pill .lbl small { overflow:hidden; text-overflow:ellipsis; }
+.pill .lbl small { font-size:9px; font-weight:400; opacity:.65; }
