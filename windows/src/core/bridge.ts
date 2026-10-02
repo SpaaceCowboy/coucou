@@ -30,6 +30,8 @@ export interface BootInfo {
 
 export const Bridge = {
   boot: () => call<BootInfo>("boot"),
+  /** Starts passive Codex monitoring after the island subscribes. */
+  startCodexMonitor: () => call<void>("start_codex_monitor"),
 
   saveSettings: (settings: Settings) => call<void>("save_settings", { settings }),
 

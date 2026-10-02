@@ -3,7 +3,7 @@
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
 
-export type AgentSource = "claudeCode" | "n8n";
+export type AgentSource = "claudeCode" | "codex" | "n8n";
 export type PillBadge = "approval" | "finished" | "error";
 
 export interface AgentTask {
@@ -19,6 +19,7 @@ export interface AgentTask {
   miniEye?: EyeShape | null;
   pillBadge?: PillBadge | null;
   sessionCwd?: string | null;
+  sessionId?: string | null;
 }
 
 export interface ApprovalInfo {

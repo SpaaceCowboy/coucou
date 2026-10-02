@@ -5,6 +5,7 @@
 import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { Ticker } from "./ticker";
+import { sessionSourceLabel } from "../core/agent-events";
 import { State, type AgentTask } from "../core/state";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
@@ -172,10 +173,10 @@ function buildOverview(actions: ViewActions): ViewHost {
         mode = null;
       }
 
-      // VS Code with a live Claude Code session keeps the ticker; every other
-      // pill shows its own card, exactly like IntegrationCardView.
+      // Coding-agent sessions share the ticker; service integrations keep their cards.
       const sessionActive =
-        task?.id === "integration_claude" && (task.state !== "idle" || task.steps.length > 0);
+        (task?.source === "claudeCode" || task?.source === "codex")
+        && (task.state !== "idle" || task.steps.length > 0 || task.source === "codex");
 
       if (task && sessionActive) {
         if (mode !== "ticker") {
@@ -188,7 +189,7 @@ function buildOverview(actions: ViewActions): ViewHost {
         who.append(
           dot(task.color, 7),
           h("span", { class: "name", text: task.name }),
-          h("span", { class: "tool", text: task.source === "claudeCode" ? "Claude Code" : "n8n" }),
+          h("span", { class: "tool", text: sessionSourceLabel(task.source) }),
         );
         if (task.steps.length > 1) {
           who.append(h("span", {
@@ -214,7 +215,7 @@ function buildOverview(actions: ViewActions): ViewHost {
 
       jump.style.display = detailOpen ? "none" : "";
 
-      const others = State.otherTasks.slice(0, 4);
+      const others = State.otherTasks;
       const pillKey = others.map((t) => `${t.id}:${t.pillBadge ?? ""}`).join("|");
       if (pillKey !== pillIds) {
         pillIds = pillKey;
@@ -227,7 +228,7 @@ function buildOverview(actions: ViewActions): ViewHost {
 }
 
 function buildPill(task: AgentTask, actions: ViewActions): HTMLElement {
-  const label = task.id === "integration_claude" ? "VS Code" : task.name;
+  const label = task.id === "integration_claude" ? "VS Code" : task.source === "codex" ? "Codex" : task.name;
   const canvas = createMiniBot(task, 24);
   const pill = h(
     "div",
@@ -353,7 +354,7 @@ function buildError(actions: ViewActions): ViewHost {
     sync() {
       const task = State.focusTask;
       clear(who);
-      who.append(agentWho(task, task?.source === "n8n" ? "n8n" : "Claude Code"));
+      who.append(agentWho(task, sessionSourceLabel(task?.source)));
       title.textContent = task?.source === "n8n" ? "Workflow stopped." : "Session stopped on an error.";
       detail.textContent = task?.steps.at(-1) ?? "No detail available.";
     },
@@ -374,7 +375,7 @@ function buildFinished(actions: ViewActions): ViewHost {
     el,
     sync() {
       clear(who);
-      who.append(agentWho(State.focusTask, "Claude Code finished"));
+      who.append(agentWho(State.focusTask, `${sessionSourceLabel(State.focusTask?.source)} finished`));
       title.textContent = State.focusTask?.steps.at(-1) ?? "Session finished";
     },
   };

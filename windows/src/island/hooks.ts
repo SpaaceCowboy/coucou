@@ -1,4 +1,4 @@
-// Claude Code hook events → island state.
+// Normalized Claude Code and Codex events → existing island state.
 // Port of HookServer.processEvent / processPermissionRequest from the macOS app.
 // Difference from macOS: no terminal filter. On Windows the hook fires from any
 // terminal (Windows Terminal, VS Code, PowerShell…) and all of them are handled.
@@ -8,22 +8,12 @@ import { Sound } from "../core/sound";
 import { State } from "../core/state";
 import type { Island } from "./island";
 
-const CLAUDE_ID = "integration_claude";
+import { claudeEvent, type AgentEvent, type ClaudeHookPayload } from "../core/agent-events";
+
+const settleTimers = new Map<string, number>();
 
 /** Clears the approval card if no decision was made before the hook gave up. */
 let pendingTimeout: number | null = null;
-
-interface HookPayload {
-  hook_event_name?: string;
-  request_id?: string;
-  session_id?: string;
-  cwd?: string;
-  message?: string;
-  /** UserPromptSubmit carries `prompt`; `message` belongs to Notification/Stop. */
-  prompt?: string;
-  tool_name?: string;
-  tool_input?: Record<string, unknown>;
-}
 
 const PROJECT_ALIASES: Record<string, string> = {
   "notch-buddy": "Notch Buddy",
@@ -101,27 +91,53 @@ function approvalTarget(tool: string, input: Record<string, unknown>): string {
   return tool;
 }
 
-function upsert(projectName: string, cwd: string) {
-  const t = State.tasks.find((x) => x.id === CLAUDE_ID);
+function upsert(id: string, event: AgentEvent, projectName: string, cwd: string) {
+  let t = State.tasks.find((x) => x.id === id);
+  if (!t && event.source === "codex") {
+    // ponytail: one Codex pill shows the latest session; split by session if needed.
+    t = { id, name: "Codex", color: "#F5F6F8", source: "codex", isIntegration: true,
+      state: "idle", steps: [], stepIndex: 0 };
+    State.tasks.push(t);
+  }
   if (!t) return;
+  if (event.source === "codex" && event.session_id && t.sessionId !== event.session_id) {
+    t.steps = [];
+    t.stepIndex = 0;
+    t.pillBadge = null;
+  }
+  if (event.session_id) t.sessionId = event.session_id;
   t.name = projectName;
   if (cwd) t.sessionCwd = cwd;
 }
 
-function clearSession() {
-  const t = State.tasks.find((x) => x.id === CLAUDE_ID);
+function clearSession(id: string) {
+  const t = State.tasks.find((x) => x.id === id);
   if (!t) return;
   t.steps = [];
   t.stepIndex = 0;
-  t.name = "VS Code";
+  t.name = t.source === "codex" ? "Codex" : "VS Code";
+  t.sessionId = null;
+  t.sessionCwd = null;
   t.pillBadge = null;
 }
 
-export function registerHookHandlers(island: Island) {
-  void onEvent<HookPayload>("hook", (payload) => handleHook(island, payload));
+export async function registerHookHandlers(island: Island) {
+  await onEvent<ClaudeHookPayload>("hook", (payload) => {
+    const event = claudeEvent(payload);
+    if (event) handleAgentEvent(island, event);
+  });
+  await onEvent<AgentEvent>("agent", (event) => handleAgentEvent(island, event));
+  await Bridge.startCodexMonitor();
 }
 
-function handleHook(island: Island, payload: HookPayload) {
+export function handleAgentEvent(island: Island, payload: AgentEvent) {
+  if (payload.source !== "claudeCode" && payload.source !== "codex") return;
+  // Codex monitoring is observational; only the existing Claude relay can approve.
+  if (payload.type === "approval_requested" && payload.source !== "claudeCode") return;
+  const id = payload.source === "codex" ? "integration_codex" : "integration_claude";
+  const current = State.tasks.find((t) => t.id === id);
+  if (["session_completed", "session_ended", "error"].includes(payload.type)
+      && payload.session_id && current?.sessionId && payload.session_id !== current.sessionId) return;
   if (State.paused) {
     // Silence here used to cost Claude Code nearly two minutes: the relay waited
     // for a decision from an island that had already decided not to look. Say so,
@@ -130,11 +146,18 @@ function handleHook(island: Island, payload: HookPayload) {
     return;
   }
 
-  const name = payload.hook_event_name ?? "";
+  const name = payload.type;
+  if (["session_started", "activity", "command", "file_edit", "session_completed", "session_ended", "error", "approval_requested"].includes(name)) {
+    const settle = settleTimers.get(id);
+    if (settle != null) {
+      window.clearTimeout(settle);
+      settleTimers.delete(id);
+    }
+  }
   const cwd = payload.cwd ?? "";
   const raw = lastPathComponent(cwd);
   const projectName = aliasProjectName(raw || "Session");
-  const focused = State.focusId === CLAUDE_ID;
+  const focused = State.focusId === id;
 
   /** Alerts force the island open; work events only reveal the compact island. */
   const surface = (view: Parameters<Island["alert"]>[0], isAlert: boolean) => {
@@ -148,86 +171,73 @@ function handleHook(island: Island, payload: HookPayload) {
   };
 
   switch (name) {
-    case "SessionStart":
-      upsert(projectName, cwd);
+    case "session_started":
+      upsert(id, payload, projectName, cwd);
+      if (payload.source === "codex") State.updateTask(id, "thinking");
       surface("overview", false);
       Sound.play("work");
       break;
 
-    case "UserPromptSubmit": {
-      upsert(projectName, cwd);
-      State.updateTask(CLAUDE_ID, "thinking");
-      // The field is `prompt`; reading `message` meant this step was always blank.
-      const asked = payload.prompt ?? payload.message;
-      if (asked) State.appendStep(CLAUDE_ID, asked.slice(0, 60));
+    case "activity":
+    case "command":
+    case "file_edit": {
+      upsert(id, payload, projectName, cwd);
+      if (payload.state) State.updateTask(id, payload.state);
+      else if (name !== "activity") State.updateTask(id, "working");
+      State.setPillBadge(id, null);
+      if (payload.message) State.appendStep(id, payload.message.slice(0, 60));
+      else if (payload.tool_name) State.appendStep(id, stepLabel(payload.tool_name, payload.tool_input ?? {}));
       surface("overview", false);
       break;
     }
 
-    case "PreToolUse": {
-      upsert(projectName, cwd);
-      State.updateTask(CLAUDE_ID, "working");
-      const tool = payload.tool_name ?? "Tool";
-      State.appendStep(CLAUDE_ID, stepLabel(tool, payload.tool_input ?? {}));
-      surface("overview", false);
-      break;
-    }
-
-    case "PostToolUse":
-      State.updateTask(CLAUDE_ID, "working");
-      break;
-
-    case "PostToolUseFailure":
-      State.updateTask(CLAUDE_ID, "working");
-      State.appendStep(CLAUDE_ID, "⚠ failed");
-      break;
-
-    case "Notification": {
+    case "notification": {
       const message = payload.message ?? "";
       const lower = message.toLowerCase();
       if (lower.includes("rate limit") || lower.includes("limite d")) {
-        State.updateTask(CLAUDE_ID, "ratelimit");
+        State.updateTask(id, "ratelimit");
         Sound.play("rate");
       } else if (message.endsWith("?")) {
-        State.updateTask(CLAUDE_ID, "question");
-        State.appendStep(CLAUDE_ID, message);
+        State.updateTask(id, "question");
+        State.appendStep(id, message);
       }
       break;
     }
 
-    case "Stop":
-      State.updateTask(CLAUDE_ID, "finished");
-      if (payload.message) State.appendStep(CLAUDE_ID, payload.message.slice(0, 60));
+    case "session_completed":
+      upsert(id, payload, projectName, cwd);
+      State.updateTask(id, "finished");
+      if (payload.message) State.appendStep(id, payload.message.slice(0, 60));
       Sound.play("finish");
       if (focused) surface("finished", true);
-      else State.setPillBadge(CLAUDE_ID, "finished");
-      window.setTimeout(() => {
-        State.updateTask(CLAUDE_ID, "idle");
-        State.setPillBadge(CLAUDE_ID, null);
-      }, 5200);
+      else State.setPillBadge(id, "finished");
+      settleTimers.set(id, window.setTimeout(() => {
+        settleTimers.delete(id);
+        State.updateTask(id, "idle");
+        State.setPillBadge(id, null);
+      }, 5200));
       break;
 
-    case "StopFailure":
-      State.updateTask(CLAUDE_ID, "error");
+    case "error":
+      upsert(id, payload, projectName, cwd);
+      if (payload.fatal === false) {
+        State.updateTask(id, "working");
+        State.appendStep(id, payload.message || "⚠ failed");
+        break;
+      }
+      if (payload.message) State.appendStep(id, payload.message.slice(0, 60));
+      State.updateTask(id, "error");
       Sound.play("error");
       if (focused) surface("error", true);
-      else State.setPillBadge(CLAUDE_ID, "error");
+      else State.setPillBadge(id, "error");
       break;
 
-    case "SessionEnd":
-      State.updateTask(CLAUDE_ID, "idle");
-      clearSession();
+    case "session_ended":
+      State.updateTask(id, "idle");
+      clearSession(id);
       break;
 
-    case "SubagentStart":
-      State.appendStep(CLAUDE_ID, "+ subagent");
-      break;
-
-    case "SubagentStop":
-      State.appendStep(CLAUDE_ID, "• subagent done");
-      break;
-
-    case "PermissionRequest": {
+    case "approval_requested": {
       const requestId = payload.request_id ?? "";
       // One card, one request. A second one must never quietly replace the first
       // — that would leave a human staring at request B while request A waits for
@@ -236,7 +246,7 @@ function handleHook(island: Island, payload: HookPayload) {
         if (requestId) void Bridge.approvalDecline(requestId);
         break;
       }
-      upsert(projectName, cwd);
+      upsert(id, payload, projectName, cwd);
       if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
       const tool = payload.tool_name ?? "Tool";
       const input = payload.tool_input ?? {};
@@ -249,7 +259,7 @@ function handleHook(island: Island, payload: HookPayload) {
       // The relay's short ack window closes in 800 ms; everything below this
       // line is synchronous, so the card really is up by the time it lands.
       if (requestId) void Bridge.approvalAck(requestId);
-      State.updateTask(CLAUDE_ID, "approval");
+      State.updateTask(id, "approval");
       State.isPinned = true;
       Sound.play("approval");
       if (focused) {
@@ -258,7 +268,7 @@ function handleHook(island: Island, payload: HookPayload) {
         // Another agent holds the view, so the card would yank it away. The badge
         // is the signal instead — but it has to be on screen for that to mean
         // anything, hence the reveal. We just told the relay a human can act.
-        State.setPillBadge(CLAUDE_ID, "approval");
+        State.setPillBadge(id, "approval");
         island.reveal();
       }
       // Coucou answers within 108 s or not at all; after that the terminal has
@@ -269,8 +279,8 @@ function handleHook(island: Island, payload: HookPayload) {
         State.pendingApproval = null;
         State.isPinned = false;
         island.dropPin();
-        State.updateTask(CLAUDE_ID, "working");
-        State.setPillBadge(CLAUDE_ID, null);
+        State.updateTask(id, "working");
+        State.setPillBadge(id, null);
         if (State.view === "approval") island.setView(State.defaultView());
         State.notify();
       }, 110_000);

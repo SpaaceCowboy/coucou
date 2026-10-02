@@ -1,6 +1,7 @@
 // Coucou for Windows — app wiring and the commands the island calls.
 
 mod claude;
+mod codex;
 mod files;
 mod hooks;
 mod integrations;
@@ -182,6 +183,11 @@ fn quit_app(app: AppHandle) {
 #[tauri::command]
 fn set_paused(paused: bool) {
     integrations::set_paused(paused);
+}
+
+#[tauri::command]
+fn start_codex_monitor(app: AppHandle) {
+    codex::start(app);
 }
 
 // ── Claude Code hooks ─────────────────────────────────────────────────────────
@@ -382,6 +388,7 @@ pub fn run() {
         .manage(Chat::default())
         .invoke_handler(tauri::generate_handler![
             boot,
+            start_codex_monitor,
             save_settings,
             set_collapsed,
             set_island_rect,

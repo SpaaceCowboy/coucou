@@ -68,6 +68,32 @@ in time, Coucou stays quiet and Claude Code asks in the terminal as usual.
 
 It works from any terminal — Windows Terminal, PowerShell, VS Code, Git Bash.
 
+## Codex sessions
+
+Codex activity appears automatically in a **Codex** pill using the same Mochi,
+session ticker, completion sounds and error views as Claude Code. Claude hooks,
+approvals, chat, file drops and service integrations continue to work as before.
+
+The Windows app passively watches local `rollout-*.jsonl` files under
+`%CODEX_HOME%\sessions`, or `%USERPROFILE%\.codex\sessions` by default.
+It detects new sessions/turns, commands, edits and completion/interruption events
+when those records are available. It never changes Codex configuration, starts
+Codex, reads authentication files, or answers Codex approvals. No API key is
+needed for monitoring.
+
+Existing history is skipped at startup; a session already running appears when
+it next writes activity. One Codex pill shows the latest active session. Rollout
+formats vary by Codex version, so unknown records are ignored; command/edit
+detail depends on the records that version writes. A completed turn is shown as
+finished, but an idle CLI process closing has no reliable event in this adapter.
+Oversized records (over 1 MiB) are skipped, and the directory watcher scans file
+metadata on changes. Native notifications sleep when there are no writes.
+WSL/remote sessions are only visible if their rollouts are in the watched folder.
+The macOS implementation is unchanged.
+
+Run the focused adapter/state checks with `npm run test:agents`, and the Windows
+backend and existing hook tests with `cargo test --workspace`.
+
 ## Chat and keys
 
 **Settings… → Claude** takes your Anthropic API key. Keys live in the **Windows
