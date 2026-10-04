@@ -23,6 +23,12 @@ async function main() {
   island.applySettings();
   State.restoreSessions();
   State.loadIntegrationTasks();
+  window.setInterval(() => {
+    const focused = State.focusTask?.id;
+    State.expireCompletedChats();
+    if (focused !== State.focusTask?.id && State.view === "finished" && !State.pendingApproval)
+      island.setView(State.defaultView());
+  }, 1000);
 
   await onEvent<{ x: number; y: number }>("cursor", ({ x, y }) => island.onCursor(x, y));
 

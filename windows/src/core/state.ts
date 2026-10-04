@@ -219,6 +219,7 @@ class AppState {
         typeof a.id === "string" && typeof a.taskId === "string" && typeof a.title === "string"
         && typeof a.message === "string" && typeof a.time === "number" && ["finished","error","approval"].includes(a.kind));
     } catch (err) { console.error("Could not restore recent chats/alerts", err); }
+    this.expireCompletedChats();
   }
 
   recordAlert(id: string, kind: RecentAlert["kind"], message: string) {
@@ -243,6 +244,21 @@ class AppState {
     t.dismissed = true;
     if (this.focusId === id) this.focusId = null;
     this.persistSessions(); this.notify();
+  }
+
+  /** Completed chats leave the active island; their alerts remain in history. */
+  expireCompletedChats() {
+    const cutoff = Date.now() - 5 * 60 * 1000;
+    let changed = false;
+    for (const t of this.tasks) {
+      if (t.source !== "codex" || t.dismissed || !["finished", "idle"].includes(t.state)
+          || t.pillBadge === "approval" || t.pillBadge === "error" || (t.updatedAt ?? 0) > cutoff) continue;
+      t.dismissed = true;
+      t.pillBadge = null;
+      if (this.focusId === t.id) this.focusId = null;
+      changed = true;
+    }
+    if (changed) { this.persistSessions(); this.notify(); }
   }
 
   setFocus(id: string) {

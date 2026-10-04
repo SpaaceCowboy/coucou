@@ -10,8 +10,6 @@ export class IslandStateMachine {
 
   /** home → petit delay, seconds. */
   homeToPetitDelay = 15;
-  /** petit → hidden delay, seconds. */
-  petitToHiddenDelay = 60;
   /** coucou → petit once the greeting animation ends (no hover). */
   greetAutoCollapseDelay = 0.6;
   /** coucou → petit while the mouse hovers the greeting. */
@@ -19,7 +17,6 @@ export class IslandStateMachine {
   /** An alert waiting for an answer stays open, even when the mouse leaves. */
   pinned = false;
 
-  private petitHide: number | null = null;
   private homeCollapse: number | null = null;
   private greetCollapse: number | null = null;
 
@@ -37,7 +34,6 @@ export class IslandStateMachine {
         this.transition("petit");
         break;
       case "petit":
-        this.clear("petitHide");
         break;
       case "home":
         this.clear("homeCollapse");
@@ -53,7 +49,7 @@ export class IslandStateMachine {
       case "hidden":
         break;
       case "petit":
-        this.schedulePetitHide();
+        // Keep the compact Mochi available at the top until explicitly paused.
         break;
       case "home":
         this.scheduleHomeCollapse();
@@ -82,7 +78,6 @@ export class IslandStateMachine {
     if (this.state !== "hidden") return;
     this.cancelTimers();
     this.transition("petit");
-    this.schedulePetitHide();
   }
 
   /** Alert or explicit request: open straight to expanded. */
@@ -104,14 +99,6 @@ export class IslandStateMachine {
 
   // ── Timers ──────────────────────────────────────────────────────────────────
 
-  private schedulePetitHide() {
-    this.clear("petitHide");
-    this.petitHide = window.setTimeout(() => {
-      this.petitHide = null;
-      if (this.state === "petit") this.transition("hidden");
-    }, this.petitToHiddenDelay * 1000);
-  }
-
   private scheduleHomeCollapse() {
     this.clear("homeCollapse");
     if (this.pinned) return;
@@ -129,14 +116,13 @@ export class IslandStateMachine {
     }, delay * 1000);
   }
 
-  private clear(which: "petitHide" | "homeCollapse" | "greetCollapse") {
+  private clear(which: "homeCollapse" | "greetCollapse") {
     const id = this[which];
     if (id != null) window.clearTimeout(id);
     this[which] = null;
   }
 
   cancelTimers() {
-    this.clear("petitHide");
     this.clear("homeCollapse");
     this.clear("greetCollapse");
   }

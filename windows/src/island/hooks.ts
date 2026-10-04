@@ -156,6 +156,8 @@ export function handleAgentEvent(island: Island, payload: AgentEvent) {
     }
     if (payload.cwd) current.sessionCwd = payload.cwd;
     if (payload.snapshot_state) {
+      if (current.state !== payload.snapshot_state && ["finished", "idle"].includes(payload.snapshot_state))
+        current.updatedAt = Date.now();
       current.state = payload.snapshot_state;
       current.pillBadge = ["thinking","working","idle"].includes(current.state) ? null : current.pillBadge;
     }
