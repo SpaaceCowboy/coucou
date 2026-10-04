@@ -5,6 +5,7 @@
 // action the spec asks for: ask a question about it.
 
 import { h, clear } from "./dom";
+import { Bridge } from "../core/bridge";
 import { State } from "../core/state";
 import type { ViewActions, ViewHost } from "./views";
 
@@ -29,11 +30,11 @@ function dashedFrame(): SVGSVGElement {
 
 export function buildUpload(): ViewHost {
   const frame = dashedFrame();
-  const title = h("div", { class: "drop-title", text: "Drop your files here" });
+  const title = h("div", { class: "drop-title", text: "Drop one file here" });
   const tags = h(
     "div",
     { class: "drop-tags" },
-    ...["PDF", "Images", "Code", "Docs"].map((t) => h("span", { text: t })),
+    ...[["Images","PNG, JPEG, GIF and WebP. Claude: 5 MiB; Codex: 8 MiB."],["Text","UTF-8 text up to 200,000 bytes."],["Code","UTF-8 source files up to 200,000 bytes."],["PDF · Claude","PDFs require Claude; up to 23 MiB."]].map(([text,title]) => h("span", {text,title})),
   );
   const card = h(
     "div",
@@ -71,7 +72,7 @@ export function buildUploading(): ViewHost {
       const pct = Math.round(State.uploadProgress * 100);
       label.textContent = done
         ? `✓  ${State.droppedFile?.name ?? "File"}`
-        : `Uploading ${State.droppedFile?.name ?? "file"}`;
+        : `Preparing ${State.droppedFile?.name ?? "file"}`;
       label.classList.toggle("done", done);
       percent.textContent = done ? "" : `${pct} %`;
       const w = State.uploadProgress * 526;
@@ -84,7 +85,7 @@ export function buildUploading(): ViewHost {
 }
 
 export function buildChoose(actions: ViewActions): ViewHost {
-  const title = h("div", { class: "title" });
+  const title = h("div", { class: "title file-choice-title" });
   const sub = h("div", { class: "sub", text: "What do you want to do with it?" });
   const row = h(
     "div",
@@ -97,9 +98,19 @@ export function buildChoose(actions: ViewActions): ViewHost {
     h("button", {
       class: "btn secondary",
       text: "Cancel",
-      onclick: () => actions.setView(State.defaultView()),
+      onclick: () => {State.droppedFile=null;State.promptContext=null;State.promptDraft="";actions.setView(State.defaultView());},
     }),
   );
+  const language=h("input",{class:"translation-language",value:"English","aria-label":"Translate into",placeholder:"Translate into…"}) as HTMLInputElement;
+  const shortcuts=[
+    ["Summarize",()=>"Summarize the attached file briefly, highlighting its main points."],
+    ["Explain",()=>"Explain the attached file in clear, simple language. Highlight anything important to understand."],
+    ["Translate",()=>`Translate the attached file into ${language.value.trim() || "English"}. Preserve its meaning and structure.`],
+  ] as const;
+  const buttons=shortcuts.map(([label,prompt])=>h("button",{class:"btn secondary",text:label,onclick:()=>{State.promptDraft=prompt();actions.setView("prompt");}}));
+  let checked="",checking=false,attachmentError="";
+  row.prepend(...buttons);
+  row.append(language);
   const el = h(
     "div",
     { class: "view" },
@@ -113,11 +124,21 @@ export function buildChoose(actions: ViewActions): ViewHost {
   return {
     el,
     sync() {
+      const file=State.droppedFile;
+      const checkKey=(file?.path ?? "")+State.settings.chatProvider;
+      if(file && checkKey!==checked){
+        checked=checkKey;checking=true;attachmentError="";
+        void Bridge.attachmentCheck(file.path,State.settings.chatProvider).catch(error=>{if(checkKey===checked)attachmentError=String(error).replace(/^Error:\s*/,"");})
+          .finally(()=>{if(checkKey===checked){checking=false;State.notify();}});
+      }
       clear(title);
       title.append(
-        h("b", { text: State.droppedFile?.name ?? "file" }),
+        h("b", { text: State.droppedFile?.name ?? "file",title:State.droppedFile?.name ?? "file" }),
         document.createTextNode(" is ready."),
       );
+      const pdf=State.droppedFile?.name.toLowerCase().endsWith(".pdf");
+      sub.textContent=attachmentError || (pdf && State.settings.chatProvider!=="claude" ? "PDFs need Claude. Switch provider in Settings → Chat." : "Choose a shortcut, then edit your prompt before sending.");
+      for(const button of [...buttons,row.querySelector<HTMLButtonElement>(".primary")!])button.disabled=checking || !!attachmentError || (!!pdf && State.settings.chatProvider!=="claude");
     },
   };
 }

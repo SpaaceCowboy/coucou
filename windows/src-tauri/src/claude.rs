@@ -86,9 +86,8 @@ pub async fn send(
     if chat.is_empty() {
         match &context {
             Some(ChatContext::File { name, path }) => {
-                if let Some(block) = file_block(path) {
-                    content.push(block);
-                }
+                crate::files::validate_attachment(path,"claude")?;
+                content.push(file_block(path).ok_or("Could not read this attachment. Drop it again.")?);
                 content.push(json!({ "type": "text", "text": format!("File: {name}") }));
             }
             Some(ChatContext::Window { app_name, title, url }) => {
@@ -158,6 +157,8 @@ pub async fn send(
 }
 
 async fn call(key: &str, body: &Value) -> Result<Value, String> {
+    crate::ensure_running()?;
+    if body.to_string().len()>32_000_000{return Err("This conversation exceeds Claude's request size limit. Start a new chat or use a smaller attachment.".into());}
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(90))
         .build()

@@ -27,9 +27,14 @@ export interface BootInfo {
   screen: { x: number; y: number; width: number; height: number; scale: number };
   version: string;
   hookPath: string;
+  showRequested?: boolean;
+  capabilities: {platform:string; floatingWindow:boolean; topEdge:boolean; codexLinks:boolean; credentialStore:string};
 }
 
 export const Bridge = {
+  attachmentCheck:(path:string,provider:string)=>IS_TAURI ? callOrThrow<void>("attachment_check",{path,provider}) : Promise.resolve(),
+  chatStatus: () => call<{configured:boolean;error?:string}>("chat_status"),
+  secretStatus: (key:string) => call<{present:boolean;error:string|null}>("secret_status",{key}),
   clickupSetup: (workspace?: string) => callOrThrow<ClickupSetup>("clickup_setup", { workspace: workspace || null }),
   clickupSend: (query: string, localTime: string, selectedTask: string | null = null) => callOrThrow<{text: string; proposal: ClickupProposal | null; choices: {id:string;name:string;list:string}[]}>("clickup_send", {query, localTime, selectedTask}),
   clickupConfirm: (id: number) => callOrThrow<{message: string; url?: string}>("clickup_confirm", {id}),
@@ -42,6 +47,7 @@ export const Bridge = {
 
   /** Shrink the window down to the invisible wake strip (hidden) or back to full. */
   setCollapsed: (collapsed: boolean) => call<void>("set_collapsed", { collapsed }),
+  setFloatingSize:(width:number,height:number)=>call<void>("set_floating_size",{width,height}),
 
   /**
    * Pushes the island shape in window coordinates. Rust flips click-through from
@@ -112,8 +118,13 @@ export interface IntegrationUpdate {
   id: string;
   data: Record<string, unknown>;
   error: string | null;
-  event: { success: boolean; label: string; detail: string | null } | null;
+  checkedAt?: number;
+  lastSuccess?: number;
+  event: IntegrationEvent | null;
+  events?: IntegrationEvent[];
 }
+
+export interface IntegrationEvent { success:boolean;label:string;detail:string|null;eventId?:string;url?:string;category?:"update"|"input"|"error"|"finished";silent?:boolean;timestamp?:number; }
 
 export type ChatContext =
   | { kind: "file"; name: string; path: string }

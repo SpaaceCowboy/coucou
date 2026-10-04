@@ -10,6 +10,7 @@ import {
   type IslandMode, type IslandViewName,
 } from "../core/layout";
 import { Sound } from "../core/sound";
+import { openSession } from "../core/session";
 import { State } from "../core/state";
 import { BotEngine, hexToRGB } from "../mochi/engine";
 import { Greeting } from "../mochi/greeting";
@@ -64,6 +65,7 @@ export class Island {
   private running = false;
   private lastFrame = 0;
   private dirty = true;
+  private reducedMotion=false;
   private canvasPx = 0;
 
   // Rust starts the window at full size so the launch greeting has room.
@@ -87,23 +89,32 @@ export class Island {
   /** Drop sequence bookkeeping: last tick played, and whether the ✓ has fired. */
   private uploadTens = 0;
   private uploadDone = false;
+  private ingestReady=false;
 
   constructor(root: HTMLElement) {
     this.root = root;
     this.build();
+    const motion=window.matchMedia("(prefers-reduced-motion: reduce)");
+    motion.addEventListener("change",()=>this.applySettings());
+    document.addEventListener("visibilitychange",()=>{
+      document.body.classList.toggle("is-minimized",document.hidden);
+      if(document.hidden)Sound.idle();else{this.dirty=true;this.ensureRunning();}
+    });
     this.wireFsm();
     this.wireInput();
     this.engine.onDizzy = () => this.handleDizzy();
     this.greeting.onComplete = () => this.fsm.greetComplete();
     State.subscribe(() => {
+      if(State.quiet || State.paused)Sound.idle();
       this.dirty = true;
+      if(this.targetSize().h!==this.lastGeometryHeight)this.animateGeometry(false);
       this.ensureRunning();
     });
   }
 
   private openSession() {
     const task = State.focusTask;
-    if (task?.source === "codex") void Bridge.openCodexChat(task.sessionId ?? "");
+    if (task?.source === "codex") openSession(task.sessionId ?? "",task.sessionCwd);
     else void Bridge.openInVSCode(task?.sessionCwd ?? null);
   }
 
@@ -116,7 +127,7 @@ export class Island {
       reveal: () => this.reveal(),
       setFocus: (id) => {
         State.setFocus(id);
-        if (id === "integration_clickup") this.setView("clickup");
+        if (State.view !== "overview") this.setView("overview");
         Sound.play("blip");
       },
       openSession: () => this.openSession(),
@@ -257,6 +268,7 @@ export class Island {
   }
 
   launch() {
+    if(this.reducedMotion || State.quiet){this.fsm.forcePetit();return;}
     this.fsm.launch();
   }
 
@@ -291,7 +303,7 @@ export class Island {
 
   /** Navigating out of the drop flow ends the sequence, as on macOS. */
   private stopSequenceIfLeaving(view: IslandViewName) {
-    if (UploadSeq.isActive && !UPLOAD_VIEWS.has(view)) UploadSeq.deactivate();
+    if (UploadSeq.isActive && (!UPLOAD_VIEWS.has(view) || view==="choose")) UploadSeq.deactivate();
   }
 
   expand(view: IslandViewName) {
@@ -373,6 +385,7 @@ export class Island {
       }
       case "drop": {
         State.fileDragOver = false;
+        if((e.paths?.length ?? 0)>1){State.noteMessage="Drop one file at a time so each question has a clear attachment.";this.setView("note");return;}
         const path = e.paths?.[0];
         if (!path) {
           this.engine.animateMorph(0);
@@ -397,11 +410,12 @@ export class Island {
     State.chatHistory = [];
     void Bridge.chatReset();
 
-    UploadSeq.performDrop(State.uploadDuration);
+    this.ingestReady=false;
+    if(!this.reducedMotion)UploadSeq.performDrop(State.uploadDuration);
     this.uploadTens = 0;
     this.uploadDone = false;
 
-    this.engine.gulp();
+    if(!this.reducedMotion)this.engine.gulp();
     Sound.play("approve");
     this.engine.triggerEmote("happy");
     this.engine.animateMorph(0);
@@ -412,17 +426,19 @@ export class Island {
 
     void Bridge.ingestFile(path)
       .then((file) => {
-        State.droppedFile = { name: file.name, path: file.path };
+        this.ingestReady=true;
+        State.droppedFile = { name: file.name, path: file.path, size:file.size };
         State.promptContext = { kind: "file", name: file.name, path: file.path };
+        if(this.reducedMotion && State.view==="uploading")this.setView("choose");
         State.notify();
       })
       .catch((err) => {
         UploadSeq.deactivate();
+        State.droppedFile=null;State.promptContext=null;
         State.noteMessage = String(err).replace(/^Error:\s*/, "");
         this.engine.animateMorph(0);
         this.setView("note");
         Sound.play("error");
-        window.setTimeout(() => this.setView(State.defaultView()), 2400);
       });
   }
 
@@ -448,22 +464,27 @@ export class Island {
       this.engine.triggerEmote("happy");
     }
     // The extra second is the grow-back, after which the choose card is up.
-    if (since >= PRE_PROGRESS + dur + 1 && State.view === "uploading") {
+    if (this.ingestReady && since >= PRE_PROGRESS + dur + 1 && State.view === "uploading") {
       this.setView("choose");
     }
   }
 
   // ── Geometry ────────────────────────────────────────────────────────────────
 
+  private lastGeometryHeight=-1;
+  private lastFloatingSize="";
   private targetSize(): { w: number; h: number; r: number } {
-    const { w, h } = islandSize(State.mode, State.view, State.chatHistory.length);
+    const { w, h:baseHeight } = islandSize(State.mode, State.view, State.chatHistory.length);
+    const h=State.mode==="expanded" && State.view==="overview" && ["integration_clickup","integration_github"].includes(State.focusTask?.id ?? "") ? 220:baseHeight;
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };
   }
 
   private animateGeometry(shrinking: boolean) {
     const { w, h, r } = this.targetSize();
-    if (shrinking) {
+    this.lastGeometryHeight=h;
+    if(this.reducedMotion){this.width.jump(w);this.height.jump(h);this.radius.jump(r);}
+    else if (shrinking) {
       this.width.curveTowards(w);
       this.height.curveTowards(h);
       this.radius.curveTowards(r);
@@ -479,9 +500,13 @@ export class Island {
     const w = this.width.value;
     const hh = this.height.value;
     const r = this.radius.value;
+    if(State.capabilities.floatingWindow && !this.width.animating && !this.height.animating){
+      const key=`${Math.round(w)}:${Math.round(hh)}`;
+      if(this.lastFloatingSize!==key){this.lastFloatingSize=key;void Bridge.setFloatingSize(w,hh);}
+    }
     this.islandEl.style.width = `${w}px`;
     this.islandEl.style.height = `${hh}px`;
-    this.islandEl.style.borderRadius = `0 0 ${r}px ${r}px`;
+    this.islandEl.style.borderRadius = State.capabilities.floatingWindow ? `${r}px` : `0 0 ${r}px ${r}px`;
     this.islandEl.style.transform = `translateX(-50%)`;
     // These follow the island as it resizes, so they belong here rather than in
     // the state-driven DOM sync.
@@ -502,7 +527,7 @@ export class Island {
   private islandRect(): { x: number; y: number; w: number; h: number } {
     const w = this.width.value;
     const hh = this.height.value;
-    return { x: (PANEL_W - w) / 2, y: 0, w, h: hh };
+    return { x: ((State.capabilities.floatingWindow || !IS_TAURI ? window.innerWidth:PANEL_W) - w) / 2, y: State.capabilities.floatingWindow ? 12:0, w, h: hh };
   }
 
   // ── Window collapse (hidden → tiny wake strip, zero polling) ────────────────
@@ -551,6 +576,7 @@ export class Island {
     });
 
     window.addEventListener("keydown", (e) => {
+      if(State.mode==="compact" && (e.key==="Enter" || e.key===" ")){e.preventDefault();this.fsm.click();}
       if (e.key === "Escape" && State.mode === "expanded" && !State.isPinned) this.collapse();
       State.lastActivity = performance.now();
     });
@@ -559,9 +585,8 @@ export class Island {
 
     // Outside Tauri (plain browser) drive the cursor from DOM events so the
     // island can be inspected with `npm run dev`.
-    if (!IS_TAURI) {
-      window.addEventListener("mousemove", (e) => this.onCursor(e.clientX, e.clientY));
-    }
+    window.addEventListener("mousemove", (e) => {if(!IS_TAURI || State.capabilities.floatingWindow)this.onCursor(e.clientX,e.clientY);});
+    document.documentElement.addEventListener("mouseleave",()=>{if(State.capabilities.floatingWindow)this.onCursor(-100,-100);});
   }
 
   /** Cursor in window-logical coordinates. */
@@ -655,7 +680,8 @@ export class Island {
     this.confusedRecovery = window.setTimeout(() => {
       this.confusedRecovery = null;
       State.stateOverride = null;
-      this.engine.setState(State.effectiveState);
+      this.engine.reducedMotion=this.reducedMotion || State.mode==="hidden";
+    this.engine.setState(State.effectiveState);
       if (State.view === "confused") {
         const fallback = State.defaultView();
         this.setView(this.prevViewBeforeConfused === "confused" ? fallback : this.prevViewBeforeConfused);
@@ -667,6 +693,7 @@ export class Island {
   // ── Frame loop ──────────────────────────────────────────────────────────────
 
   ensureRunning() {
+    if(document.hidden)return;
     if (this.running) return;
     this.running = true;
     this.lastFrame = performance.now();
@@ -674,6 +701,7 @@ export class Island {
   }
 
   private frame = (nowMs: number) => {
+    if(document.hidden){this.running=false;Sound.idle();return;}
     const dt = Math.min(0.05, (nowMs - this.lastFrame) / 1000);
     this.lastFrame = nowMs;
 
@@ -688,6 +716,7 @@ export class Island {
     }
 
     this.updateBotTargets();
+    if(this.reducedMotion){this.botCx.set(this.botCx.target);this.botCy.set(this.botCy.target);this.botSize.set(this.botSize.target);}
     this.botCx.step(dt);
     this.botCy.step(dt);
     this.botSize.step(dt);
@@ -711,8 +740,8 @@ export class Island {
     this.uploadCanvas.el.classList.toggle("on", uploadActive);
     this.viewsEl.classList.toggle("hidden-by-upload", uploadActive);
 
-    tickMiniBots(dt);
-    this.views.get(State.view)?.tick?.(nowMs);
+    tickMiniBots(this.reducedMotion ? 0:dt);
+    if(!this.reducedMotion)this.views.get(State.view)?.tick?.(nowMs);
     if (UploadSeq.isActive) this.stepSequence();
     this.updateCountdown(nowMs);
 
@@ -728,7 +757,7 @@ export class Island {
       ? settling
       : settling ||
         !this.botCx.settled || !this.botCy.settled || !this.botSize.settled ||
-        greetingActive || this.engine.busy || UploadSeq.isActive;
+        (!this.reducedMotion && (greetingActive || this.engine.busy)) || UploadSeq.isActive;
 
     if (busy) {
       requestAnimationFrame(this.frame);
@@ -796,7 +825,7 @@ export class Island {
         this.engine.slotHVel = 0;
       }
     }
-    this.engine.update(dt);
+    this.engine.update(this.reducedMotion ? 0:dt);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, hCss);
     this.engine.draw(ctx, w, hCss);
@@ -828,6 +857,7 @@ export class Island {
   // ── DOM sync ────────────────────────────────────────────────────────────────
 
   private syncDom() {
+    document.body.classList.toggle("is-hidden",State.mode==="hidden");
     const expanded = State.mode === "expanded";
     const greetingActive = expanded && State.view === "greeting";
 
@@ -839,6 +869,8 @@ export class Island {
     for (const [name, view] of this.views) {
       const on = name === State.view;
       view.el.classList.toggle("on", on);
+      view.el.inert=!on || State.mode!=="expanded";
+      view.el.setAttribute("aria-hidden",String(!on || State.mode!=="expanded"));
       if (on) view.sync();
     }
 
@@ -872,11 +904,17 @@ export class Island {
     }
 
     syncMiniBotStates(State.tasks);
+    this.header.el.inert=State.mode!=="expanded";
+    this.header.el.setAttribute("aria-hidden",String(State.mode!=="expanded"));
+    this.islandEl.tabIndex=State.mode==="compact" ? 0:-1;
+    this.islandEl.setAttribute("aria-label",State.mode==="compact" ? "Open Coucou":"Coucou");
     this.engine.setState(State.effectiveState);
   }
 
   /** Applies settings coming from Rust at boot. */
   applySettings() {
+    this.reducedMotion=State.settings.reducedMotion || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    document.body.classList.toggle("reduce-motion",this.reducedMotion);
     Sound.setEnabled(State.settings.soundEnabled);
     Sound.setVolume(State.settings.soundVolume);
     this.fsm.homeToPetitDelay = State.settings.autoCloseInterval;

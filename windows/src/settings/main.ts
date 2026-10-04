@@ -9,6 +9,9 @@ import { h, clear } from "../views/dom";
 
 let settings: Settings = { ...DEFAULT_SETTINGS };
 let version = "";
+let credentialStore="system credential store";
+let floatingWindow=false;
+let desktopPlatform="windows";
 
 const root = document.getElementById("settings-root")!;
 
@@ -18,11 +21,12 @@ async function save() {
 
 // ── Reusable bits ─────────────────────────────────────────────────────────────
 
-function toggle(on: boolean, onChange: (v: boolean) => void): HTMLElement {
-  const el = h("button", { class: on ? "switch on" : "switch", "aria-pressed": on });
+function toggle(on: boolean, onChange: (v: boolean) => void, label:string): HTMLElement {
+  const el = h("button", { class: on ? "switch on" : "switch", "aria-pressed": on,"aria-label":label });
   el.addEventListener("click", () => {
     const next = !el.classList.contains("on");
     el.classList.toggle("on", next);
+    el.setAttribute("aria-pressed",String(next));
     onChange(next);
   });
   return el;
@@ -190,7 +194,7 @@ function chatSection(): HTMLElement {
 
 function apiSection(hasKey: boolean): HTMLElement {
   const dot = statusDot(hasKey);
-  const state = h("span", { class: "hint", text: hasKey ? "Key saved in the Windows Credential Manager." : "No Claude key yet. Codex chat uses your ChatGPT sign-in." });
+  const state = h("span", { class: "hint", text: hasKey ? "Key saved securely." : "No Claude key yet. Codex chat uses your ChatGPT sign-in." });
 
   const field = h("input", {
     type: "password",
@@ -208,7 +212,7 @@ function apiSection(hasKey: boolean): HTMLElement {
     const present = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
     dot.style.background = present ? "#22c55e" : "#f4505e";
     state.textContent = present
-      ? "Key saved in the Windows Credential Manager."
+      ? "Key saved securely."
       : "No Claude key yet. Codex chat uses your ChatGPT sign-in.";
     field.placeholder = present ? "••••••••••••  (stored)" : "sk-ant-...";
     clearBtn.style.display = present ? "" : "none";
@@ -301,12 +305,12 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
 
   function updateNote() {
     const used = settings.activeIntegrations.length;
-    note.textContent = `Pick up to ${MAX_ACTIVE} pills to show next to Mochi — ${used}/${MAX_ACTIVE} in use. Keys are stored in the Windows Credential Manager, never on disk.`;
+    note.textContent = `Pick up to ${MAX_ACTIVE} pills to show next to Mochi — ${used}/${MAX_ACTIVE} in use. Keys are stored in ${credentialStore}, never in preferences.`;
   }
 
   for (const def of INTEGRATIONS) {
     const active = settings.activeIntegrations.includes(def.id);
-    const sw = h("button", { class: active ? "switch on" : "switch" });
+    const sw = h("button", { class: active ? "switch on" : "switch", "aria-label":def.name+" monitoring", "aria-pressed":active });
     sw.addEventListener("click", () => {
       const on = settings.activeIntegrations.includes(def.id);
       if (on) {
@@ -315,7 +319,7 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
         if (settings.activeIntegrations.length >= MAX_ACTIVE) return;
         settings.activeIntegrations = [...settings.activeIntegrations, def.id];
       }
-      sw.classList.toggle("on", !on);
+      sw.classList.toggle("on", !on);sw.setAttribute("aria-pressed",String(!on));
       updateNote();
       void save();
     });
@@ -327,19 +331,21 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
         placeholder: present[field.key] ? "••••••••  (stored)" : field.placeholder,
         autocomplete: "off",
         spellcheck: "false",
-        style: "flex:1 1 auto;min-width:0",
+        style: "flex:1 1 auto;min-width:0", "aria-label":def.name+" "+field.label,
       }) as HTMLInputElement;
       const saveBtn = h("button", { text: "Save" });
       const dotEl = statusDot(present[field.key] ?? false);
+      const connectionMessage=h("div",{class:"hint",role:"status"});
       saveBtn.addEventListener("click", async () => {
         const value = input.value.trim();
         try {
           await Bridge.secretSet(field.key, value);
-          present[field.key] = value.length > 0;
+          present[field.key] = value.length > 0; await save();
           input.value = "";
           input.placeholder = value ? "••••••••  (stored)" : field.placeholder;
           dotEl.style.background = value ? "#22c55e" : "#f4505e";
-        } catch {
+        } catch (error) {
+          connectionMessage.textContent=String(error).replace(/^Error:\s*/,"");
           dotEl.style.background = "#f5a524";
         }
       });
@@ -349,6 +355,8 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
           input, saveBtn, dotEl,
         ),
       );
+      rows.append(connectionMessage);
+      void Bridge.secretStatus(field.key).then(status=>{if(status?.error)connectionMessage.textContent=status.error;});
     }
 
     list.append(
@@ -363,6 +371,7 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
     );
   }
 
+  list.append(h("div",{class:"hint",text:"GitHub notifications need a classic personal access token with notifications access; fine-grained tokens are unsupported. Existing tokens are never replaced automatically."}));
   updateNote();
   return h("section", {}, h("h2", {}, h("span", { text: "Integrations" })), note, list);
 }
@@ -423,7 +432,7 @@ function clickupSection(): HTMLElement {
 
 function generalSection(): HTMLElement {
   const volume = h("input", {
-    type: "range", min: "0", max: "0.2", step: "0.005",
+    type: "range", min: "0", max: "0.2", step: "0.005", "aria-label":"Sound volume",
     value: String(settings.soundVolume),
   }) as HTMLInputElement;
   volume.addEventListener("input", () => {
@@ -432,7 +441,7 @@ function generalSection(): HTMLElement {
   });
 
   const autoClose = h("input", {
-    type: "number", min: "5", max: "120", step: "1",
+    type: "number", min: "5", max: "120", step: "1", "aria-label":"Auto-close after seconds",
     value: String(Math.round(settings.autoCloseInterval)),
     style: "width:72px",
   }) as HTMLInputElement;
@@ -442,12 +451,12 @@ function generalSection(): HTMLElement {
     void save();
   });
 
-  const screen = h("select", {}) as HTMLSelectElement;
+  const screen = h("select", {"aria-label":"Island display",disabled:floatingWindow}) as HTMLSelectElement;
   screen.append(
     h("option", { value: "primary", text: "Main display" }),
-    h("option", { value: "cursor", text: "Display under the cursor" }),
   );
-  screen.value = settings.screen;
+  if(desktopPlatform==="windows")screen.append(h("option",{value:"cursor",text:"Display under the cursor"}));
+  screen.value = desktopPlatform==="windows" ? settings.screen:"primary";
   screen.addEventListener("change", () => {
     settings.screen = screen.value as Settings["screen"];
     void save();
@@ -457,13 +466,14 @@ function generalSection(): HTMLElement {
     "section",
     {},
     h("h2", {}, h("span", { text: "General" })),
+    h("div",{class:"row"},h("label",{text:"Reduced motion"}),toggle(settings.reducedMotion,v=>{settings.reducedMotion=v;void save();},"Reduced motion")),
     h("div", { class: "row" },
       h("label", { text: "Show integration pills" }),
-      toggle(settings.showIntegrationPills, v => { settings.showIntegrationPills = v; void save(); }),
+      toggle(settings.showIntegrationPills, v => { settings.showIntegrationPills = v; void save(); },"Show integration pills"),
     ),
     h("div", { class: "row" },
       h("label", { text: "Sound" }),
-      toggle(settings.soundEnabled, (v) => { settings.soundEnabled = v; void save(); }),
+      toggle(settings.soundEnabled, (v) => { settings.soundEnabled = v; void save(); },"Sound"),
       volume,
     ),
     h("div", { class: "row" },
@@ -474,12 +484,34 @@ function generalSection(): HTMLElement {
     h("div", { class: "row" },
       h("label", { text: "Island lives on" }),
       screen,
+      floatingWindow ? h("span",{class:"hint",text:"Move the window to your preferred display."}):null,
     ),
     h("div", { class: "row" },
       h("label", { text: "Launch at startup" }),
-      toggle(settings.autostart, (v) => { settings.autostart = v; void save(); }),
+      toggle(settings.autostart, (v) => { settings.autostart = v; void save(); },"Launch at startup"),
     ),
   );
+}
+
+function notificationsSection():HTMLElement {
+  const quiet=h("select",{"aria-label":"Quiet mode"}) as HTMLSelectElement;
+  const choices=[["off","Off"],["0","Until I turn it off"],["30","30 minutes"],["60","1 hour"],["120","2 hours"]];
+  for(const [value,text]of choices)quiet.append(h("option",{value,text}));
+  const remaining=(settings.quietUntil ?? 0)-Date.now();
+  quiet.value=settings.quietUntil===0 ? "0" : remaining>0 ? String([30,60,120].find(m=>remaining<=m*60_000) ?? 120) : "off";
+  quiet.onchange=()=>{settings.quietUntil=quiet.value==="off" ? null : quiet.value==="0" ? 0 : Date.now()+Number(quiet.value)*60_000;void save();};
+  const section=h("section",{},h("h2",{text:"Notifications"}),
+    h("div",{class:"row"},h("label",{text:"Quiet mode"}),quiet),
+    h("div",{class:"hint",text:"Quiet mode keeps monitoring and saves updates in your inbox. No sounds or automatic opening. Permissions return to the terminal. Pause stops monitoring."}));
+  for(const def of [...INTEGRATIONS,{id:"integration_clickup",name:"ClickUp"}]) {
+    const select=h("select",{"aria-label":`${def.name} notifications`}) as HTMLSelectElement;
+    for(const [value,text]of [["actionable","Actionable updates"],["all","All updates"],["off","Off"]])select.append(h("option",{value,text}));
+    select.value=settings.notificationPreferences[def.id] ?? "actionable";
+    select.onchange=()=>{settings.notificationPreferences={...settings.notificationPreferences,[def.id]:select.value as "actionable"|"all"|"off"};void save();};
+    section.append(h("div",{class:"row"},h("label",{text:def.name}),select));
+  }
+  section.append(h("div",{class:"hint",text:"Inbox items are kept on this device for 30 days, up to 200 items. Dismissing a GitHub update only changes Coucou."}));
+  return section;
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
@@ -489,6 +521,9 @@ async function main() {
   if (boot) {
     settings = { ...settings, ...boot.settings };
     version = boot.version;
+    credentialStore=boot.capabilities.credentialStore;
+    floatingWindow=boot.capabilities.floatingWindow;
+    desktopPlatform=boot.capabilities.platform;
   }
   const status = (await Bridge.hooksStatus()) ?? {
     installed: false, settingsPath: "", hookPath: "", hookReady: false,
@@ -512,6 +547,8 @@ async function main() {
     clickupSection(),
     integrationsSection(present),
     generalSection(),
+    notificationsSection(),
+    h("section",{},h("button",{class:"btn",text:"Quit Coucou",onclick:()=>void Bridge.quit()})),
     h("div", {
       class: "hint",
       text: "No telemetry. Network requests only go to the services you configure yourself.",

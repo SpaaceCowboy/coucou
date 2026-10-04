@@ -2,21 +2,14 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
-use std::os::windows::ffi::OsStrExt;
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
-use windows::core::PCWSTR;
-use windows::Win32::Foundation::WAIT_OBJECT_0;
-use windows::Win32::Storage::FileSystem::{
-    FindCloseChangeNotification, FindFirstChangeNotificationW, FindNextChangeNotification,
-    FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME,
-    FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE,
-};
-use windows::Win32::System::Threading::{WaitForSingleObject};
+
 
 static STARTED: AtomicBool = AtomicBool::new(false);
 const MAX_LINE: u64 = 1024 * 1024;
@@ -31,7 +24,7 @@ pub fn chat_url(session_id: &str) -> Option<String> {
 
 pub fn home() -> Option<PathBuf> {
     std::env::var_os("CODEX_HOME").map(PathBuf::from).or_else(|| {
-        std::env::var_os("USERPROFILE").map(|p| PathBuf::from(p).join(".codex"))
+        Some(crate::platform::home().join(".codex"))
     })
 }
 
@@ -42,21 +35,17 @@ pub fn start(app: AppHandle, session_ids: Vec<String>) {
         let restore: HashSet<String> = session_ids.into_iter().collect();
         let root = home.join("sessions");
         // Codex may not have been installed/run yet. No history or settings writes.
+        #[cfg(windows)]
         while !root.is_dir() { std::thread::sleep(Duration::from_secs(5)); }
-        let wide: Vec<u16> = root.as_os_str().encode_wide().chain(Some(0)).collect();
-        let watch = unsafe { FindFirstChangeNotificationW(
-            PCWSTR(wide.as_ptr()), true,
-            FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME
-                | FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE,
-        ) };
-        let handle = match watch {
-            Ok(handle) => handle,
-            Err(err) => { crate::log::line(format!("Codex monitor: {err}")); return; }
-        };
+        let mut watcher=match crate::platform::watch::Watcher::new(&root,&home){Ok(w)=>w,Err(e)=>{crate::log::line(format!("Codex monitor: {e}"));return}};
         let mut tails = HashMap::new();
         let mut titles = HashMap::new();
         let mut index_stamp = None;
+        let mut pause_generation=crate::integrations::PAUSE_GENERATION.load(Ordering::Relaxed);
         loop {
+            let generation=crate::integrations::PAUSE_GENERATION.load(Ordering::Relaxed);
+            if generation!=pause_generation{tails.clear();index_stamp=None;pause_generation=generation;}
+            if crate::integrations::PAUSED.load(Ordering::Relaxed){tails.clear();if !watcher.wait(){break;}continue;}
             let path = home.join("session_index.jsonl");
             let stamp = fs::metadata(&path).ok().map(|m| (m.len(), m.modified().ok()));
             if stamp != index_stamp {
@@ -76,13 +65,9 @@ pub fn start(app: AppHandle, session_ids: Vec<String>) {
                 let _ = app.emit_to(crate::island::WINDOW_LABEL, "agent", event);
             };
             if tails.is_empty() { scan(&root, &mut tails, true, &restore, &emit); }
-            let result = unsafe { WaitForSingleObject(handle, 3000) };
-            if result == WAIT_OBJECT_0 {
-                if unsafe { FindNextChangeNotification(handle) }.is_err() { break; }
-                scan(&root, &mut tails, false, &restore, &emit);
-            } else if result.0 != 258 { break; }
+            if !watcher.wait(){break;}
+            if !crate::integrations::PAUSED.load(Ordering::Relaxed) && crate::integrations::PAUSE_GENERATION.load(Ordering::Relaxed)==pause_generation{scan(&root,&mut tails,false,&restore,&emit);}
         }
-        unsafe { let _ = FindCloseChangeNotification(handle); }
         crate::log::line("Codex monitor stopped");
     });
 }
@@ -199,7 +184,7 @@ impl Tail {
             if !complete { break; }
             self.offset += n as u64;
             if let Ok(record) = serde_json::from_slice::<Value>(&line) {
-                if let Some(event) = self.record(&record) { emit(event); }
+                if let Some(mut event) = self.record(&record) { event["event_id"]=json!(format!("{}:{}:{}",self.session_id,text(&record,"timestamp"),self.offset));emit(event); }
             }
         }
         Ok(())
@@ -423,6 +408,7 @@ fn chat_input(query: &str, context: Option<&crate::claude::ChatContext>) -> Resu
     let mut input = Vec::new();
     match context {
         Some(ChatContext::File {name,path}) => {
+            crate::files::validate_attachment(path,"codex")?;
             let file = Path::new(path);
             let ext = file.extension().and_then(|e|e.to_str()).unwrap_or("").to_lowercase();
             if ext == "pdf" { return Err("For PDF questions, choose Claude in Settings → Chat. Your attached file will stay here.".into()); }

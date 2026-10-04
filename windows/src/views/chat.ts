@@ -18,7 +18,10 @@ function bubble(message: ChatMessage): HTMLElement {
       h("div", { class: "bubble", text: message.content }),
     );
   }
-  return h("div", { class: "chat-row" }, h("div", { class: "reply", text: message.content }));
+  const copy=h("button",{class:"link-btn copy-reply",text:"Copy reply",onclick:async()=>{
+    try {await navigator.clipboard.writeText(message.content);copy.textContent="Copied";}catch{copy.textContent="Select text to copy";}
+  }});
+  return h("div", { class: "chat-row" }, h("div",{class:"reply-group"},h("div", { class: "reply", text: message.content }),copy));
 }
 
 function typingDots(): HTMLElement {
@@ -64,6 +67,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
   let renderedCount = -1;
   let resetting = false;
   let conversationProvider = State.settings.chatProvider;
+  let attachmentPath="";
 
   async function reset(clearFile = false) {
     if (sending || resetting) return;
@@ -71,13 +75,14 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
     State.chatHistory = []; State.stateOverride = null; renderedCount = -1; errorBox.textContent = "";
     if (clearFile) {input.value = ""; State.droppedFile = null; State.promptContext = null;}
     State.notify(); onHeightChange();
-    try { await Bridge.chatReset(); } finally {resetting = false; State.notify(); input.focus();}
+    try { await Bridge.chatReset(); } finally {resetting = false; State.notify(); if(State.view==="prompt" && State.mode==="expanded")input.focus();}
   }
 
   async function submit() {
     const query = input.value.trim();
-    if (!query || sending || resetting) return;
+    if (!query || sending || resetting || State.paused) return;
     const provider = conversationProvider;
+    let requested=false;
     const messageId = nextId++;
     errorBox.textContent = "";
     input.value = "";
@@ -94,9 +99,12 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       State.chatHistory.length === 1 && file ? { kind: "file", name: file.name, path: file.path } : null;
 
     try {
+      if(file && State.chatHistory.length===1)await Bridge.attachmentCheck(file.path,provider);
+      requested=true;
       const reply = await Bridge.chatSend(query, context);
       if (provider !== State.settings.chatProvider) return;
       State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text });
+      State.chatError=null;State.chatLastSuccess=Date.now();State.chatConfigured=true;
       State.stateOverride = null;
       Sound.play("finish");
     } catch (err) {
@@ -104,6 +112,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       if (provider !== State.settings.chatProvider) return;
       State.chatHistory = State.chatHistory.filter(message => message.id !== messageId);
       errorBox.textContent = String(err).replace(/^Error:\s*/, "");
+      if(requested)State.chatError=errorBox.textContent;
       if (!input.value) input.value = query;
       Sound.play("error");
     } finally {
@@ -111,7 +120,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       State.stateOverride = null;
       State.notify();
       onHeightChange();
-      input.focus();
+      if(State.view==="prompt" && State.mode==="expanded")input.focus();
     }
   }
 
@@ -121,7 +130,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       e.preventDefault();
       void submit();
     }
-    e.stopPropagation(); // Escape closes the island, not the chat
+    if((e as KeyboardEvent).key!=="Escape")e.stopPropagation();
   });
 
   return {
@@ -131,25 +140,39 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       fresh.disabled = sending || resetting;
       if (!sending && !resetting && conversationProvider !== State.settings.chatProvider) void reset();
       const file = State.droppedFile;
+      if(!sending && !resetting && attachmentPath!==(file?.path ?? "")) {
+        attachmentPath=file?.path ?? "";
+        if(State.chatHistory.length)void reset();
+      }
+      if(State.promptDraft!==null) {input.value=State.promptDraft;State.promptDraft=null;}
       const wantChip = file?.name ?? "";
       if (chipRow.dataset.label !== wantChip) {
         chipRow.dataset.label = wantChip;
         clear(chipRow);
-        if (wantChip) chipRow.append(contextChip(wantChip));
+        if (wantChip) {
+          const chip=contextChip(wantChip);
+          chip.append(h("button",{class:"remove-context",text:"×",title:"Remove attachment and start a new chat",onclick:()=>{
+            if(sending || resetting)return;
+            State.droppedFile=null;State.promptContext=null;attachmentPath="";void reset();
+          }}));
+          chipRow.append(chip);
+        }
       }
 
       const thinking = State.stateOverride === "thinking";
       const count = State.chatHistory.length + (thinking ? 0.5 : 0);
       if (count !== renderedCount) {
+        const atBottom=log.scrollHeight-log.scrollTop-log.clientHeight<32;
+        const scroll=log.scrollTop;
         renderedCount = count;
         clear(log);
         for (const m of State.chatHistory) log.append(bubble(m));
         if (thinking) log.append(typingDots());
-        log.scrollTop = log.scrollHeight;
+        log.scrollTop = atBottom ? log.scrollHeight : scroll;
       }
 
       input.placeholder = State.chatHistory.length === 0 ? "Ask me anything…" : "Continue…";
-      input.disabled = send.disabled = sending || resetting;
+      input.disabled = send.disabled = sending || resetting || State.paused;
     },
     focus() {
       input.focus();

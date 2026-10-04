@@ -6,6 +6,7 @@ export type AgentEventType =
   | "notification" | "waiting" | "error" | "session_metadata" | "session_snapshot";
 
 export interface AgentEvent {
+  terminal_fallback?: boolean;
   source: SessionSource;
   type: AgentEventType;
   session_id?: string;
@@ -18,11 +19,14 @@ export interface AgentEvent {
   tool_name?: string;
   tool_input?: Record<string, unknown>;
   request_id?: string;
+  event_id?: string;
   /** Tool failures keep the session running; fatal failures show the error view. */
   fatal?: boolean;
 }
 
 export interface ClaudeHookPayload {
+  event_id?: string;
+  terminal_fallback?: boolean;
   hook_event_name?: string;
   notification_type?: string;
   request_id?: string;

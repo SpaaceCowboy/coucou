@@ -42,7 +42,26 @@ pub struct IntegrationEvent {
 }
 
 fn emit(app: &AppHandle, update: IntegrationUpdate) {
-    let _ = app.emit_to(WINDOW_LABEL, "integration", update);
+    let mut value=serde_json::to_value(&update).unwrap_or_default();
+    let now=now_ms();
+    value["checkedAt"]=json!(now);
+    if update.error.is_none() { value["lastSuccess"]=json!(now); }
+    if let Some(event)=value.get_mut("event").filter(|v|v.is_object()) {
+        let key=update.id.trim_start_matches("integration_");
+        if let Some(id)=SEEN.0.lock().unwrap().get(key) {event["eventId"]=json!(format!("{id}:{}",event["success"]));}
+    }
+    let _ = app.emit_to(WINDOW_LABEL, "integration", value);
+}
+
+fn now_ms()->u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64 }
+
+fn credential(app:&AppHandle,id:&'static str,key:&str)->Option<String>{
+    match secrets::status(key){Ok(true)=>secrets::get(key),Ok(false)=>None,Err(err)=>{connection_error(app,id,err);None}}
+}
+fn connection_error(app:&AppHandle,id:&'static str,message:impl Into<String>) {
+    let message=message.into();
+    if id=="integration_github"{GITHUB.lock().unwrap().error=Some(message.clone());}
+    emit(app,IntegrationUpdate{id,data:json!({}),error:Some(message),event:None});
 }
 
 fn client() -> reqwest::Client {
@@ -52,12 +71,32 @@ fn client() -> reqwest::Client {
         .unwrap_or_default()
 }
 
+fn github_poll_delay(headers:&reqwest::header::HeaderMap,now:u64)->u64{
+    let number=|name:&str|headers.get(name).and_then(|v|v.to_str().ok()).and_then(|v|v.parse::<u64>().ok());
+    let interval=number("x-poll-interval").unwrap_or(60).max(60);
+    let retry=number("retry-after").or_else(||headers.get("retry-after").and_then(|v|v.to_str().ok()).and_then(|v|chrono::DateTime::parse_from_rfc2822(v).ok()).map(|date|(date.timestamp().max(0) as u64).saturating_sub(now))).unwrap_or(0);
+    let limited=number("x-ratelimit-remaining")==Some(0);
+    interval.max(retry).max(if limited{number("x-ratelimit-reset").unwrap_or(now).saturating_sub(now)}else{0})
+}
+
+fn github_headers(token:&str,modified:Option<&str>)->reqwest::header::HeaderMap{
+    use reqwest::header::*;
+    let mut headers=HeaderMap::new();
+    if let Ok(value)=HeaderValue::from_str(&format!("Bearer {token}")){headers.insert(AUTHORIZATION,value);}
+    headers.insert(ACCEPT,HeaderValue::from_static("application/vnd.github+json"));
+    headers.insert(USER_AGENT,HeaderValue::from_static("Coucou"));
+    headers.insert("X-GitHub-Api-Version",HeaderValue::from_static("2022-11-28"));
+    if let Some(value)=modified.and_then(|v|HeaderValue::from_str(v).ok()){headers.insert(IF_MODIFIED_SINCE,value);}
+    headers
+}
+
 /// Set from the tray's Pause item. While it is on, nothing reaches the network:
 /// pausing Coucou has to mean pausing Coucou, not just hiding the island.
 pub static PAUSED: AtomicBool = AtomicBool::new(false);
+pub static PAUSE_GENERATION:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
 
 pub fn set_paused(on: bool) {
-    PAUSED.store(on, Ordering::Relaxed);
+    if PAUSED.swap(on,Ordering::Relaxed)!=on{PAUSE_GENERATION.fetch_add(1,Ordering::Relaxed);crate::platform::watch::wake();}
 }
 
 /// Spawns every poller with the macOS delays and intervals.
@@ -66,7 +105,8 @@ pub fn start(app: AppHandle) {
     spawn(app.clone(), "integration_vercel", 5, 30, poll_vercel);
     spawn(app.clone(), "integration_stripe", 6, 30, poll_stripe);
     spawn(app.clone(), "integration_resend", 6, 60, poll_resend);
-    spawn(app.clone(), "integration_github", 7, 300, poll_github);
+    spawn(app.clone(), "integration_github", 7, 60, poll_github);
+    spawn(app.clone(), "integration_clickup", 4, 300, poll_clickup);
     spawn(app.clone(), "integration_calcom", 8, 300, poll_calcom);
     spawn(app, "integration_notion", 9, 300, poll_notion);
 }
@@ -76,7 +116,8 @@ fn enabled(app: &AppHandle, id: &str) -> bool {
     app.try_state::<crate::Shared>()
         .map(|shared| {
             let settings = shared.settings.lock().unwrap();
-            settings.active_integrations.iter().any(|x| x == id)
+            if id=="integration_clickup" { !settings.clickup_workspace.is_empty() && !settings.clickup_list.is_empty() }
+            else { settings.active_integrations.iter().any(|x| x == id) }
         })
         .unwrap_or(false)
 }
@@ -105,6 +146,7 @@ where
 
 /// One-shot refresh from the Refresh buttons in the island.
 pub async fn poll_once(app: AppHandle, id: &str) {
+    if PAUSED.load(Ordering::Relaxed) || !enabled(&app,id) { return; }
     match id {
         "integration_stripe" => poll_stripe(app).await,
         "integration_github" => poll_github(app).await,
@@ -113,7 +155,17 @@ pub async fn poll_once(app: AppHandle, id: &str) {
         "integration_resend" => poll_resend(app).await,
         "integration_notion" => poll_notion(app).await,
         "integration_calcom" => poll_calcom(app).await,
+        "integration_clickup" => poll_clickup(app).await,
         _ => {}
+    }
+}
+
+async fn poll_clickup(app:AppHandle) {
+    if credential(&app,"integration_clickup","clickup-api-token").is_none(){return;}
+    let settings=app.state::<crate::Shared>().settings.lock().unwrap().clone();
+    match crate::clickup::next_tasks(&settings).await {
+        Ok(data)=>emit(&app,IntegrationUpdate{id:"integration_clickup",data,error:None,event:None}),
+        Err(err)=>connection_error(&app,"integration_clickup",err),
     }
 }
 
@@ -144,7 +196,7 @@ fn status_error(code: u16, unauthorised_hint: &str) -> String {
 // ── Stripe ────────────────────────────────────────────────────────────────────
 
 async fn poll_stripe(app: AppHandle) {
-    let Some(key) = secrets::get("stripe-api-key") else { return };
+    let Some(key) = credential(&app,"integration_stripe","stripe-api-key") else { return };
     let auth = format!("Basic {}", crate::claude::base64_for(format!("{key}:").as_bytes()));
     let http = client();
 
@@ -201,11 +253,11 @@ async fn poll_stripe(app: AppHandle) {
         .header("Authorization", &auth)
         .send()
         .await;
-    let Ok(response) = charges else { return };
+    let Ok(response) = charges else {connection_error(&app,"integration_stripe","Could not load payments. Refresh when your connection returns.");return;};
     if !response.status().is_success() {
         return;
     }
-    let json: Value = response.json().await.unwrap_or(json!({}));
+    let json: Value = match response.json().await {Ok(v)=>v,Err(_)=>{connection_error(&app,"integration_stripe","The service returned an unreadable response. Refresh or check connection settings.");return;}};
     let payments: Vec<Value> = json
         .get("data")
         .and_then(Value::as_array)
@@ -264,76 +316,86 @@ async fn poll_stripe(app: AppHandle) {
 
 // ── GitHub ────────────────────────────────────────────────────────────────────
 
+#[derive(Default)]
+struct GithubState { error:Option<String>,checked_at:Option<u64>,last_success:Option<u64>,modified:Option<String>, next_poll:Option<std::time::Instant>, seen:std::collections::HashSet<String>, initialized:bool, data:Value }
+static GITHUB:std::sync::LazyLock<Mutex<GithubState>>=std::sync::LazyLock::new(||Mutex::new(GithubState::default()));
+pub fn reset_github(){*GITHUB.lock().unwrap()=GithubState::default();}
+
+fn github_target(item:&Value)->Option<String>{
+    let source=item["subject"]["url"].as_str()?;
+    let path=source.strip_prefix("https://api.github.com/repos/")?;
+    let parts:Vec<_>=path.split('/').collect();
+    if parts.len()!=4 || !["issues","pulls"].contains(&parts[2]) || !parts[3].bytes().all(|b|b.is_ascii_digit()) || parts[3].is_empty(){return None;}
+    Some(format!("https://github.com/{}/{}/{}/{}",parts[0],parts[1],if parts[2]=="pulls"{"pull"}else{"issues"},parts[3]))
+}
+
 async fn poll_github(app: AppHandle) {
-    let Some(token) = secrets::get("github-token") else { return };
-    let http = client();
-
-    let user = http
-        .get("https://api.github.com/user")
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "Coucou")
-        .send()
-        .await;
-    let Ok(response) = user else { return };
-    if !response.status().is_success() {
-        emit(&app, IntegrationUpdate {
-            id: "integration_github",
-            data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Token lacks the needed scope")),
-            event: None,
-        });
-        return;
+    let Some(token)=credential(&app,"integration_github","github-token") else{return;};
+    if token.starts_with("github_pat_"){connection_error(&app,"integration_github","Fine-grained tokens cannot read notifications. Connect a classic token with notifications access in Settings.");return;}
+    let modified={let mut state=GITHUB.lock().unwrap();if state.next_poll.is_some_and(|next|next>std::time::Instant::now()) {
+        if state.initialized || state.error.is_some(){let _=app.emit_to(WINDOW_LABEL,"integration",json!({"id":"integration_github","data":state.data,"error":state.error,"event":null,"checkedAt":state.checked_at,"lastSuccess":state.last_success}));}return;
+    }state.next_poll=Some(std::time::Instant::now()+Duration::from_secs(60));state.modified.clone()};
+    let request=client().get("https://api.github.com/notifications?per_page=100").headers(github_headers(&token,modified.as_deref()));
+    let response=match request.send().await {Ok(r)=>r,Err(_)=>{connection_error(&app,"integration_github","Could not reach GitHub. Refresh when your connection returns.");return;}};
+    let status=response.status();
+    GITHUB.lock().unwrap().checked_at=Some(now_ms());
+    let delay=github_poll_delay(response.headers(),now_ms()/1000);
+    let modified=response.headers().get("Last-Modified").and_then(|v|v.to_str().ok()).map(str::to_owned);
+    GITHUB.lock().unwrap().next_poll=std::time::Instant::now().checked_add(Duration::from_secs(delay));
+    if status.as_u16()==304 {
+        let mut state=GITHUB.lock().unwrap();state.error=None;state.last_success=Some(now_ms());let data=state.data.clone();drop(state);
+        emit(&app,IntegrationUpdate{id:"integration_github",data,error:None,event:None});return;
     }
-    let json: Value = response.json().await.unwrap_or(json!({}));
-    let public = json.get("public_repos").and_then(Value::as_i64).unwrap_or(0);
-    let private = json
-        .get("owned_private_repos")
-        .or_else(|| json.get("total_private_repos"))
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
+    if !status.is_success(){connection_error(&app,"integration_github",status_error(status.as_u16(),"Notifications require a classic personal access token with notifications access. Fine-grained tokens are unsupported."));return;}
+    let mut next=github_next_page(response.headers());
+    let value:Value=match response.json().await {Ok(value)=>value,Err(_)=>{connection_error(&app,"integration_github","GitHub returned an unreadable response.");return;}};
+    let Some(mut list)=value.as_array().cloned()else{connection_error(&app,"integration_github","GitHub returned an unreadable response.");return;};
+    for _ in 0..9 {
+        let Some(url)=next.take()else{break};
+        if PAUSED.load(Ordering::Relaxed){return;}
+        let response=match client().get(url).headers(github_headers(&token,None)).send().await{Ok(r)=>r,Err(_)=>{connection_error(&app,"integration_github","Could not load the next notifications page. Refresh when your network returns.");return}};
+        let next_poll=std::time::Instant::now().checked_add(Duration::from_secs(github_poll_delay(response.headers(),now_ms()/1000)));
+        {let mut state=GITHUB.lock().unwrap();state.next_poll=state.next_poll.max(next_poll);}
+        if !response.status().is_success(){connection_error(&app,"integration_github",status_error(response.status().as_u16(),"GitHub notification access was rejected. Check your classic token in Settings."));return;}
+        next=github_next_page(response.headers());
+        let value:Value=match response.json().await{Ok(v)=>v,Err(_)=>{connection_error(&app,"integration_github","GitHub returned an unreadable notifications page.");return}};
+        let Some(page)=value.as_array()else{connection_error(&app,"integration_github","GitHub returned an unreadable notifications page.");return};
+        list.extend(page.iter().cloned());
+    }
+    let notifications:Vec<Value>=list.iter().filter(|n|["mention","team_mention","assign","review_requested"].contains(&n["reason"].as_str().unwrap_or("")))
+        .filter_map(|n|Some(json!({"id":n["id"],"title":n["subject"]["title"],"repository":n["repository"]["full_name"],"reason":n["reason"],"updatedAt":n["updated_at"],"url":github_target(n)?}))).collect();
+    let mut state=GITHUB.lock().unwrap();
+    let mut events=Vec::new();
+    for item in &notifications {
+        let id=format!("{}:{}",item["id"],item["updatedAt"]);
+        let new=state.seen.insert(id.clone());
+        if new {events.push(json!({"silent":!state.initialized,"success":true,"eventId":id,"label":item["title"],"detail":item["repository"],"url":item["url"],"category":"update","timestamp":item["updatedAt"].as_str().and_then(|time|chrono::DateTime::parse_from_rfc3339(time).ok()).map(|time|time.timestamp_millis())}));}
+    }
+    if state.seen.len()>1000{state.seen=notifications.iter().map(|n|format!("{}:{}",n["id"],n["updatedAt"])).collect();}
+    state.initialized=true;state.error=None;state.last_success=Some(now_ms());state.modified=modified;state.data=json!({"notifications":notifications});
+    let data=state.data.clone();drop(state);
+    let now=now_ms();
+    let _=app.emit_to(WINDOW_LABEL,"integration",json!({"id":"integration_github","data":data,"error":null,"event":null,"events":events,"checkedAt":now,"lastSuccess":now}));
+}
 
-    let repos = http
-        .get("https://api.github.com/user/repos?per_page=100&affiliation=owner&sort=pushed")
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "Coucou")
-        .send()
-        .await;
-    let stars: i64 = match repos {
-        Ok(r) if r.status().is_success() => r
-            .json::<Value>()
-            .await
-            .ok()
-            .and_then(|v| v.as_array().cloned())
-            .map(|list| {
-                list.iter()
-                    .filter_map(|r| r.get("stargazers_count").and_then(Value::as_i64))
-                    .sum()
-            })
-            .unwrap_or(0),
-        _ => 0,
-    };
-
-    emit(&app, IntegrationUpdate {
-        id: "integration_github",
-        data: json!({ "totalRepos": public + private, "totalStars": stars }),
-        error: None,
-        event: None,
-    });
+fn github_next_page(headers:&reqwest::header::HeaderMap)->Option<reqwest::Url>{
+    let value=headers.get("link")?.to_str().ok()?;
+    let part=value.split(',').find(|s|s.contains("rel=\"next\""))?;
+    let url=reqwest::Url::parse(part.trim().strip_prefix('<')?.split('>').next()?).ok()?;
+    (url.scheme()=="https" && url.host_str()==Some("api.github.com") && url.path()=="/notifications" && url.username().is_empty() && url.password().is_none()).then_some(url)
 }
 
 // ── Vercel ────────────────────────────────────────────────────────────────────
 
 async fn poll_vercel(app: AppHandle) {
-    let Some(token) = secrets::get("vercel-token") else { return };
+    let Some(token) = credential(&app,"integration_vercel","vercel-token") else { return };
     let response = client()
         .get("https://api.vercel.com/v6/deployments?limit=5")
         .header("Authorization", format!("Bearer {token}"))
         .header("Accept", "application/json")
         .send()
         .await;
-    let Ok(response) = response else { return };
+    let Ok(response) = response else { connection_error(&app,"integration_vercel","Connection failed. Refresh when your network returns."); return };
     if !response.status().is_success() {
         emit(&app, IntegrationUpdate {
             id: "integration_vercel",
@@ -343,7 +405,7 @@ async fn poll_vercel(app: AppHandle) {
         });
         return;
     }
-    let json: Value = response.json().await.unwrap_or(json!({}));
+    let json: Value = match response.json().await {Ok(v)=>v,Err(_)=>{connection_error(&app,"integration_vercel","The service returned an unreadable response. Refresh or check connection settings.");return;}};
     let terminal = ["READY", "ERROR", "CANCELED"];
     let deployments: Vec<Value> = json
         .get("deployments")
@@ -398,14 +460,14 @@ async fn poll_vercel(app: AppHandle) {
 // ── Resend ────────────────────────────────────────────────────────────────────
 
 async fn poll_resend(app: AppHandle) {
-    let Some(key) = secrets::get("resend-api-key") else { return };
+    let Some(key) = credential(&app,"integration_resend","resend-api-key") else { return };
     let response = client()
         .get("https://api.resend.com/emails?limit=100")
         .header("Authorization", format!("Bearer {key}"))
         .header("Accept", "application/json")
         .send()
         .await;
-    let Ok(response) = response else { return };
+    let Ok(response) = response else { connection_error(&app,"integration_resend","Connection failed. Refresh when your network returns."); return };
     if !response.status().is_success() {
         emit(&app, IntegrationUpdate {
             id: "integration_resend",
@@ -415,7 +477,7 @@ async fn poll_resend(app: AppHandle) {
         });
         return;
     }
-    let json: Value = response.json().await.unwrap_or(json!({}));
+    let json: Value = match response.json().await {Ok(v)=>v,Err(_)=>{connection_error(&app,"integration_resend","The service returned an unreadable response. Refresh or check connection settings.");return;}};
     let total = json
         .get("total")
         .or_else(|| json.get("count"))
@@ -455,7 +517,7 @@ async fn poll_resend(app: AppHandle) {
 // ── Notion ────────────────────────────────────────────────────────────────────
 
 async fn poll_notion(app: AppHandle) {
-    let Some(token) = secrets::get("notion-api-key") else { return };
+    let Some(token) = credential(&app,"integration_notion","notion-api-key") else { return };
     let response = client()
         .post("https://api.notion.com/v1/search")
         .header("Authorization", format!("Bearer {token}"))
@@ -467,7 +529,7 @@ async fn poll_notion(app: AppHandle) {
         }))
         .send()
         .await;
-    let Ok(response) = response else { return };
+    let Ok(response) = response else { connection_error(&app,"integration_notion","Connection failed. Refresh when your network returns."); return };
     if !response.status().is_success() {
         emit(&app, IntegrationUpdate {
             id: "integration_notion",
@@ -477,7 +539,7 @@ async fn poll_notion(app: AppHandle) {
         });
         return;
     }
-    let json: Value = response.json().await.unwrap_or(json!({}));
+    let json: Value = match response.json().await {Ok(v)=>v,Err(_)=>{connection_error(&app,"integration_notion","The service returned an unreadable response. Refresh or check connection settings.");return;}};
     let pages: Vec<Value> = json
         .get("results")
         .and_then(Value::as_array)
@@ -547,14 +609,14 @@ fn parse_notion_page(obj: &Value) -> Option<Value> {
 // ── Cal.com ───────────────────────────────────────────────────────────────────
 
 async fn poll_calcom(app: AppHandle) {
-    let Some(key) = secrets::get("calcom-api-key") else { return };
+    let Some(key) = credential(&app,"integration_calcom","calcom-api-key") else { return };
     let response = client()
         .get("https://api.cal.com/v2/bookings?status=upcoming")
         .header("Authorization", format!("Bearer {key}"))
         .header("cal-api-version", "2024-08-13")
         .send()
         .await;
-    let Ok(response) = response else { return };
+    let Ok(response) = response else { connection_error(&app,"integration_calcom","Connection failed. Refresh when your network returns."); return };
     if !response.status().is_success() {
         emit(&app, IntegrationUpdate {
             id: "integration_calcom",
@@ -564,7 +626,7 @@ async fn poll_calcom(app: AppHandle) {
         });
         return;
     }
-    let json: Value = response.json().await.unwrap_or(json!({}));
+    let json: Value = match response.json().await {Ok(v)=>v,Err(_)=>{connection_error(&app,"integration_calcom","The service returned an unreadable response. Refresh or check connection settings.");return;}};
     let bookings: Vec<Value> = json
         .get("data")
         .and_then(Value::as_array)
@@ -608,7 +670,7 @@ async fn poll_calcom(app: AppHandle) {
 // ── n8n ───────────────────────────────────────────────────────────────────────
 
 async fn poll_n8n(app: AppHandle) {
-    let (Some(key), Some(raw_base)) = (secrets::get("n8n-api-key"), secrets::get("n8n-url")) else {
+    let (Some(key), Some(raw_base)) = (credential(&app,"integration_n8n","n8n-api-key"),credential(&app,"integration_n8n","n8n-url")) else {
         return;
     };
     let base = raw_base.trim_end_matches('/').to_string();
@@ -622,6 +684,7 @@ async fn poll_n8n(app: AppHandle) {
 
     let mut items: Option<Vec<Value>> = None;
     for url in &list_urls {
+        if PAUSED.load(Ordering::Relaxed){return;}
         let Ok(response) = http.get(url).header("X-N8N-API-KEY", &key).header("Accept", "application/json").send().await
         else {
             continue;
@@ -642,7 +705,8 @@ async fn poll_n8n(app: AppHandle) {
         }
     }
 
-    let Some(first) = items.and_then(|list| list.into_iter().next()) else { return };
+    let Some(items)=items else {connection_error(&app,"integration_n8n","Could not read n8n executions. Check the instance URL and API key in Settings.");return;};
+    let Some(first)=items.into_iter().next() else {emit(&app,IntegrationUpdate{id:"integration_n8n",data:json!({}),error:None,event:None});return;};
     let id = match first.get("id") {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Number(n)) => n.to_string(),
@@ -651,9 +715,11 @@ async fn poll_n8n(app: AppHandle) {
 
     let status = first.get("status").and_then(Value::as_str).unwrap_or("");
     if !["success", "error", "crashed", "canceled", "failed"].contains(&status) {
+        emit(&app,IntegrationUpdate{id:"integration_n8n",data:json!({"status":status}),error:None,event:None});
         return;
     }
     if !is_new("n8n", &id) {
+        emit(&app,IntegrationUpdate{id:"integration_n8n",data:json!({"status":status}),error:None,event:None});
         return;
     }
     let success = status == "success";
@@ -667,6 +733,7 @@ async fn poll_n8n(app: AppHandle) {
     let mut name = "Workflow".to_string();
     let mut detail = None;
     for url in &detail_urls {
+        if PAUSED.load(Ordering::Relaxed){return;}
         let Ok(response) = http.get(url).header("X-N8N-API-KEY", &key).header("Accept", "application/json").send().await
         else {
             continue;
@@ -761,5 +828,30 @@ fn fmt_value(v: &Value) -> String {
         Value::Array(a) => format!("[{}]", a.len()),
         Value::Object(_) => "{…}".into(),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod notification_tests {
+    use super::*;
+    #[test]
+    fn conditional_headers_polling_and_credential_errors(){
+        let request=github_headers("test-token",Some("Sat, 03 Oct 2026 10:00:00 GMT"));
+        assert_eq!(request["if-modified-since"],"Sat, 03 Oct 2026 10:00:00 GMT");
+        assert_eq!(request["accept"],"application/vnd.github+json");
+        let mut headers=reqwest::header::HeaderMap::new();
+        assert_eq!(github_poll_delay(&headers,1000),60);
+        headers.insert("x-poll-interval","120".parse().unwrap());assert_eq!(github_poll_delay(&headers,1000),120);
+        headers.insert("retry-after","600".parse().unwrap());assert_eq!(github_poll_delay(&headers,1000),600);
+        headers.insert("x-ratelimit-remaining","0".parse().unwrap());headers.insert("x-ratelimit-reset","1900".parse().unwrap());assert_eq!(github_poll_delay(&headers,1000),900);
+        assert!(status_error(401,"classic token needed").contains("Invalid"));assert_eq!(status_error(403,"classic token needed"),"classic token needed");
+    }
+    #[test]
+    fn notification_targets_and_pagination_never_leave_github(){
+        assert_eq!(github_target(&json!({"subject":{"url":"https://api.github.com/repos/example/project/pulls/12"}})).as_deref(),Some("https://github.com/example/project/pull/12"));
+        assert!(github_target(&json!({"subject":{"url":"https://evil.example/repos/example/project/pulls/12"}})).is_none());
+        let mut headers=reqwest::header::HeaderMap::new();
+        headers.insert("link",r#"<https://api.github.com/notifications?page=2>; rel="next""#.parse().unwrap());assert!(github_next_page(&headers).is_some());
+        headers.insert("link",r#"<https://evil.example/notifications?page=2>; rel="next""#.parse().unwrap());assert!(github_next_page(&headers).is_none());
     }
 }

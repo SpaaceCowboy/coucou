@@ -2,7 +2,7 @@
 // Each canvas owns a BotEngine; the island's frame loop ticks every live one.
 
 import { BotEngine, hexToRGB } from "./engine";
-import type { AgentTask } from "../core/state";
+import { State, type AgentTask } from "../core/state";
 
 interface MiniBot {
   canvas: HTMLCanvasElement;
@@ -39,6 +39,7 @@ export function createMiniBot(task: AgentTask, bodySize: number): HTMLElement {
 
   const engine = new BotEngine();
   engine.isMini = true;
+  engine.reducedMotion=State.settings.reducedMotion || State.mode==="hidden" || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   engine.bodyColor = hexToRGB(task.color);
   engine.setState(task.state, true);
   if (task.emote) engine.setPermanentEmote(task.emote);
@@ -67,6 +68,7 @@ export function syncMiniBotStates(tasks: AgentTask[]) {
   for (const mb of live.values()) {
     const task = tasks.find((t) => t.id === mb.taskId);
     if (!task) continue;
+    mb.engine.reducedMotion=State.settings.reducedMotion || State.mode==="hidden" || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     mb.engine.setState(task.state);
     mb.engine.bodyColor = hexToRGB(task.color);
   }

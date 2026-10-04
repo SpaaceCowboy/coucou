@@ -82,13 +82,13 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   // botY 103 = bar top (42 + 58) + 3, so the dot really rides the bar. The Swift
   // layout says 118 while its own comment says 103; the comment matches the spec.
   uploading: { height: 176, botX: 46, botY: 103, botDiameter: 20, agentMode: "none" },
-  choose: { height: 176, botX: 60, botY: 101, botDiameter: 52, agentMode: "column" },
+  choose: { height: 220, botX: 60, botY: 101, botDiameter: 52, agentMode: "column" },
   mail: { height: 240, botX: 56, botY: null, botDiameter: 46, agentMode: "column" },
   prompt: { height: 160, botX: 52, botY: null, botDiameter: 44, agentMode: "column" },
   searching: { height: 160, botX: 52, botY: null, botDiameter: 44, agentMode: "column" },
   result: { height: 160, botX: 52, botY: null, botDiameter: 44, agentMode: "column" },
   note: { height: 160, botX: 60, botY: null, botDiameter: 50, agentMode: "column" },
-  settings: { height: 160, botX: 54, botY: null, botDiameter: 46, agentMode: "none" },
+  settings: { height: 200, botX: 54, botY: null, botDiameter: 46, agentMode: "none" },
   greeting: { height: 150, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
 };
 
@@ -189,8 +189,18 @@ export function botGlowOpacity(s: BotStateName): number {
       return 0.15;
     case "dizzy":
       return 0;
-    default:
+    case "working":
+    case "thinking":
+    case "searching":
+    case "finished":
+      return 0.18;
+    case "approval":
+    case "question":
+    case "error":
+    case "ratelimit":
       return 0.65;
+    default:
+      return 0.15;
   }
 }
 

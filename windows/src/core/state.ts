@@ -2,6 +2,7 @@
 
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
+import { restoreInbox, trimInbox, upsertInbox, safeAction, quietActive, type InboxItem, type InboxAction, type NotificationPreference } from "./inbox";
 
 export type AgentSource = "claudeCode" | "codex" | "n8n" | "clickup";
 export type PillBadge = "approval" | "finished" | "error";
@@ -25,11 +26,7 @@ export interface AgentTask {
   dismissed?: boolean;
 }
 
-export interface RecentAlert {
-  id: string; taskId: string; sessionId?: string | null; cwd?: string | null;
-  source: AgentSource; kind: "finished" | "error" | "approval";
-  title: string; message: string; time: number;
-}
+export type RecentAlert = InboxItem;
 
 export interface ApprovalInfo {
   requestId: string;
@@ -89,6 +86,9 @@ export interface IntegrationInfo {
   error: string | null;
   loaded: boolean;
   configured: boolean;
+  lastSuccess?: number;
+  checkedAt?: number;
+  refreshing?: boolean;
 }
 
 export interface Settings {
@@ -106,6 +106,9 @@ export interface Settings {
   showIntegrationPills: boolean;
   clickupWorkspace: string;
   clickupList: string;
+  quietUntil: number | null;
+  notificationPreferences: Record<string, NotificationPreference>;
+  reducedMotion: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -124,6 +127,9 @@ export const DEFAULT_SETTINGS: Settings = {
   showIntegrationPills: false,
   clickupWorkspace: "",
   clickupList: "",
+  quietUntil: null,
+  notificationPreferences: {},
+  reducedMotion: false,
 };
 
 type Listener = () => void;
@@ -136,6 +142,13 @@ class AppState {
   focusId: string | null = null;
   recentAlerts: RecentAlert[] = [];
   historyStorageError = "";
+  private dismissedEvents: string[] = [];
+  capabilities = { platform:"windows", floatingWindow:false, topEdge:true, codexLinks:true, credentialStore:"Windows Credential Manager" };
+  chatConfigured = false;
+  chatError:string|null=null;
+  chatLastSuccess:number|null=null;
+  notificationRevision=0;
+  promptDraft: string | null = null;
 
   stateOverride: BotStateName | null = null;
 
@@ -152,7 +165,7 @@ class AppState {
   fileDragOver = false;
 
   promptContext: PromptContext | null = null;
-  droppedFile: { name: string; path: string } | null = null;
+  droppedFile: { name: string; path: string; size?: number } | null = null;
   noteMessage: string | null = null;
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
@@ -188,9 +201,10 @@ class AppState {
     const chats = this.tasks.filter(t => t.source === "codex" && !t.dismissed)
       .sort((a,b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
     const finished = chats.filter(t => t.state === "finished" || t.state === "idle").slice(0,5);
-    return this.tasks.filter(t => t.source === "clickup"
-      || (t.source === "codex" ? !t.dismissed && (finished.includes(t) || !["finished","idle"].includes(t.state))
-        : this.settings.showIntegrationPills || (t.source === "claudeCode" && (t.state !== "idle" || !!t.pillBadge || !!this.pendingApproval))))
+    return this.tasks.filter(t => (t.source === "clickup" ? !!this.integrations[t.id]?.configured
+        : t.source === "codex" ? !t.dismissed && (finished.includes(t) || !["finished","idle"].includes(t.state))
+        : (this.settings.showIntegrationPills && !!this.integrations[t.id]?.configured && (t.id === "integration_claude" || this.settings.activeIntegrations.includes(t.id)))
+          || (t.source === "claudeCode" && (t.state !== "idle" || !!t.pillBadge || !!this.pendingApproval))))
       .sort((a,b) => Number(!!b.pillBadge && b.pillBadge !== "finished") - Number(!!a.pillBadge && a.pillBadge !== "finished")
         || Number(b.source === "codex") - Number(a.source === "codex") || (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
   }
@@ -199,10 +213,12 @@ class AppState {
     return this.visibleTasks.filter(t => t.id !== this.focusTask?.id);
   }
 
+  private connectionEvents: Record<string,string> = {};
   persistSessions() {
     try {
+      this.recentAlerts = trimInbox(this.recentAlerts);
       localStorage.setItem("coucou-sessions", JSON.stringify({
-        tasks: this.visibleTasks.filter(t => t.source === "codex").map(t => ({...t, steps:t.steps.slice(-1),stepIndex:0})), alerts: this.recentAlerts,
+        tasks: this.visibleTasks.filter(t => t.source === "codex").map(t => ({...t, steps:t.steps.slice(-1),stepIndex:0})), alerts: this.recentAlerts, dismissedEvents:this.dismissedEvents, connectionEvents:this.connectionEvents,
       }));
       this.historyStorageError = "";
     } catch (err) { this.historyStorageError = "Recent history could not be saved. Free up local storage or dismiss older alerts."; console.error("Could not save recent chats/alerts", err); }
@@ -215,25 +231,60 @@ class AppState {
         t.source === "codex" && typeof t.sessionId === "string" && t.id === 'codex:' + t.sessionId
         && typeof t.name === "string" && Array.isArray(t.steps)
         && ["idle","thinking","working","question","ratelimit","error","finished"].includes(t.state)));
-      if (Array.isArray(saved.alerts)) this.recentAlerts = saved.alerts.filter((a: RecentAlert) =>
-        typeof a.id === "string" && typeof a.taskId === "string" && typeof a.title === "string"
-        && typeof a.message === "string" && typeof a.time === "number" && ["finished","error","approval"].includes(a.kind));
+      this.recentAlerts = restoreInbox(saved.alerts);
+      this.connectionEvents = Object.fromEntries(Object.entries(saved.connectionEvents ?? {}).filter(([key,value])=>key.startsWith("integration_") && typeof value==="string")) as Record<string,string>;
+      this.dismissedEvents = Array.isArray(saved.dismissedEvents) ? saved.dismissedEvents.filter((v:unknown) => typeof v === "string").slice(-200) : [];
     } catch (err) { console.error("Could not restore recent chats/alerts", err); }
     this.expireCompletedChats();
   }
 
-  recordAlert(id: string, kind: RecentAlert["kind"], message: string) {
+  get quiet(): boolean { return quietActive(this.settings.quietUntil); }
+  get unreadCount(): number { return this.recentAlerts.filter(a => !a.read).length; }
+  notificationPreference(id: string): NotificationPreference { return this.settings.notificationPreferences[id] ?? "actionable"; }
+
+  recordInbox(item: Omit<InboxItem,"id"|"time"|"read"> & {time?:number}): boolean {
+    if (this.dismissedEvents.includes(item.source + ":" + item.eventId)) return false;
+    const result = upsertInbox(this.recentAlerts, {...item,id:item.source + ":" + item.eventId,time:item.time ?? Date.now(),read:false,action:safeAction(item.action)});
+    this.recentAlerts = result.items;
+    this.persistSessions(); this.notify();
+    return result.isNew;
+  }
+
+  recordAlert(id: string, kind: RecentAlert["kind"], message: string, eventId?:string) {
     const t = this.tasks.find(t => t.id === id);
     if (!t) return;
     const last = this.recentAlerts[0];
     if (last?.taskId === id && last.kind === kind && last.message === message && Date.now() - last.time < 2000) return;
-    const time = Date.now();
-    this.recentAlerts.unshift({ id: time + ':' + Math.random().toString(36).slice(2), taskId: id,
-      sessionId: t.sessionId, cwd: t.sessionCwd, source: t.source, kind, title: t.name, message: message.slice(0,500), time });
-    this.persistSessions();
+    const action:InboxAction | undefined = t.source === "codex" && t.sessionId ? {kind:"session",sessionId:t.sessionId,cwd:t.sessionCwd ?? undefined}
+      : t.source === "clickup" ? {kind:"clickup"} : t.sessionCwd ? {kind:"folder",path:t.sessionCwd} : undefined;
+    this.recordInbox({eventId:eventId ?? `${id}:${kind}:${Date.now()}`,taskId:id,sessionId:t.sessionId,cwd:t.sessionCwd,source:t.source,kind,title:t.name,message:message.slice(0,500),action});
+  }
+
+  markAlertRead(id:string) { const a=this.recentAlerts.find(a=>a.id===id); if(a) a.read=true; this.persistSessions();this.notify(); }
+
+  isEventDismissed(source:string,eventId:string){return this.dismissedEvents.includes(source+":"+eventId);}
+  dismissEvent(source:string,eventId:string){
+    this.notificationRevision++;
+    this.dismissedEvents=[...this.dismissedEvents,source+":"+eventId].slice(-200);
+    this.recentAlerts=this.recentAlerts.filter(a=>a.source!==source || a.eventId!==eventId);
+    this.persistSessions();this.notify();
+  }
+  connectionUpdate(source:string,title:string,error:string|null){
+    if(error){
+      const eventId=this.connectionEvents[source] ?? this.recentAlerts.find(a=>a.source===source && a.kind==="connection" && !a.resolved)?.eventId ?? `connection:${Date.now()}`;
+      this.connectionEvents[source]=eventId;
+      if(this.notificationPreference(source)!=="off")return this.recordInbox({source,taskId:source,eventId,kind:"connection",title,message:error,action:{kind:"settings"}});
+    }else{
+      delete this.connectionEvents[source];
+      for(const item of this.recentAlerts)if(item.source===source && item.kind==="connection" && !item.resolved){item.read=true;item.resolved=true;item.message="Connection restored.";}
+    }
+    return false;
   }
 
   dismissAlert(id: string) {
+    this.notificationRevision++;
+    const item = this.recentAlerts.find(a=>a.id===id);
+    if (item) this.dismissedEvents = [...this.dismissedEvents,item.source+":"+item.eventId].slice(-200);
     this.recentAlerts = this.recentAlerts.filter(a => a.id !== id);
     this.persistSessions(); this.notify();
   }
@@ -324,7 +375,7 @@ class AppState {
   }
 
   defaultView(): IslandViewName {
-    return this.tasks.length === 0 ? "empty" : "overview";
+    return this.visibleTasks.length === 0 ? "empty" : "overview";
   }
 }
 

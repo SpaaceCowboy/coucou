@@ -12,7 +12,10 @@
     "tauri": "tauri",
     "predev": "cargo build --release -p coucou-hook",
     "prebuild": "cargo build --release -p coucou-hook",
-    "pack": "tauri build && node scripts/pack.mjs"
+    "pack": "tauri build && node scripts/pack.mjs",
+    "test:helper": "node scripts/test-helper.mjs",
+    "test": "npm run test:agents && npm run test:helper",
+    "pack:debian": "tauri build --bundles deb"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

@@ -177,7 +177,7 @@ export class UploadCanvas {
     text(ctx, "Drop your files here", USC.TEXT_X, USC.TEXT_Y - 4, `500 13px ${FONT}`, "#D5D7DB");
 
     let cx = USC.TEXT_X;
-    for (const chip of ["PDF", "Images", "Code", "Docs"]) {
+    for (const chip of ["PDF · Claude", "Images", "Text", "Code"]) {
       // The macOS port measures chips the same rough way, so the row lines up.
       const w = chip.length * 6.5 + 16;
       ctx.fillStyle = "rgba(255,255,255,0.07)";

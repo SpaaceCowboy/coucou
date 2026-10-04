@@ -28,6 +28,12 @@ pub struct Settings {
     pub clickup_workspace: String,
     #[serde(default)]
     pub clickup_list: String,
+    #[serde(default)]
+    pub quiet_until: Option<u64>,
+    #[serde(default)]
+    pub notification_preferences: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub reduced_motion: bool,
 }
 
 fn default_chat_provider() -> String { "codex".into() }
@@ -36,6 +42,11 @@ fn default_model() -> String {
     crate::claude::DEFAULT_MODEL.to_string()
 }
 
+impl Settings {
+    pub fn quiet_active(&self)->bool {
+        self.quiet_until.is_some_and(|until| until==0 || until>std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64)
+    }
+}
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -57,28 +68,37 @@ impl Default for Settings {
             chat_provider: default_chat_provider(),
             clickup_workspace: String::new(),
             clickup_list: String::new(),
+            quiet_until: None,
+            notification_preferences: Default::default(),
+            reduced_motion: false,
         }
     }
 }
 
 /// %APPDATA%\Coucou
 pub fn config_dir() -> PathBuf {
+    #[cfg(target_os="linux")] {return std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(||crate::platform::home().join(".config")).join("coucou");}
+    #[cfg(windows)] {
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     base.join("Coucou")
+    }
 }
 
 /// %LOCALAPPDATA%\Coucou — where coucou-hook.exe and the log live.
 pub fn local_dir() -> PathBuf {
+    #[cfg(target_os="linux")] {return std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(||crate::platform::home().join(".local/share")).join("coucou");}
+    #[cfg(windows)] {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     base.join("Coucou")
+    }
 }
 
 pub fn hook_exe_path() -> PathBuf {
-    local_dir().join("bin").join("coucou-hook.exe")
+    local_dir().join("bin").join(crate::platform::hook_name())
 }
 
 fn settings_path() -> PathBuf {
@@ -109,10 +129,20 @@ mod tests {
         let object = value.as_object_mut().unwrap();
         object.remove("chatProvider");
         object.remove("showIntegrationPills"); object.remove("clickupWorkspace"); object.remove("clickupList");
+        object.remove("quietUntil");object.remove("notificationPreferences");object.remove("reducedMotion");
         object.insert("soundVolume".into(),serde_json::json!(0.07));
         let loaded: Settings = serde_json::from_value(value).unwrap();
         assert_eq!(loaded.sound_volume,0.07); assert!(!loaded.show_integration_pills);
         assert_eq!(loaded.chat_provider,"codex");
         assert!(loaded.clickup_list.is_empty()); assert_eq!(loaded.active_integrations.len(),4);
+        assert_eq!(loaded.quiet_until,None);assert!(loaded.notification_preferences.is_empty());assert!(!loaded.reduced_motion);
+    }
+
+    #[test]
+    fn quiet_mode_distinguishes_off_manual_and_expired(){
+        let mut settings=Settings::default();assert!(!settings.quiet_active());
+        settings.quiet_until=Some(0);assert!(settings.quiet_active());
+        settings.quiet_until=Some(1);assert!(!settings.quiet_active());
+        settings.quiet_until=Some(u64::MAX);assert!(settings.quiet_active());
     }
 }

@@ -19,6 +19,23 @@ use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+#[cfg(target_os="linux")]
+#[path="../../shared/relay_path.rs"]
+mod relay_path;
+
+#[cfg(target_os="linux")]
+fn connect()->Option<std::os::unix::net::UnixStream>{
+    use std::os::fd::AsRawFd;
+    let stream=std::os::unix::net::UnixStream::connect(relay_path::socket_path().ok()?).ok()?;
+    let mut cred:libc::ucred=unsafe{std::mem::zeroed()};
+    let mut size=std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let result=unsafe{libc::getsockopt(stream.as_raw_fd(),libc::SOL_SOCKET,libc::SO_PEERCRED,(&mut cred as *mut libc::ucred).cast(),&mut size)};
+    if result!=0||cred.uid!=unsafe{libc::geteuid()}{return None;}
+    stream.set_write_timeout(Some(CONNECT_TIMEOUT)).ok()?;
+    stream.set_read_timeout(Some(DECISION_BUDGET)).ok()?;
+    Some(stream)
+}
+
 /// Budget for getting a pipe connection. Beyond this Claude Code wins, always.
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(300);
 /// Whole-run budget for an event nobody waits on: connect and write, no more.
@@ -28,6 +45,7 @@ const DECISION_BUDGET: Duration = Duration::from_secs(110);
 
 /// `ERROR_PIPE_BUSY` — every instance is serving someone else right now. This is
 /// the one error worth retrying: the server exists and a slot will free up.
+#[cfg(windows)]
 const ERROR_PIPE_BUSY: i32 = 231;
 
 /// Fields that are pointless to forward and can be enormous (a whole file read,
@@ -37,11 +55,13 @@ const DROPPED_FIELDS: &[&str] = &["tool_response", "transcript_path"];
 /// less than this anyway.
 const MAX_FIELD_LEN: usize = 2_000;
 
+#[cfg(windows)]
 mod win;
 
 /// `\\.\pipe\coucou-<sid>`. The SID keeps two accounts on the same machine from
 /// ever meeting on the same pipe; the name falls back to the user name only if
 /// the SID cannot be read at all, which should not happen.
+#[cfg(windows)]
 fn pipe_path() -> String {
     let key = win::current_user_sid()
         .unwrap_or_else(|| std::env::var("USERNAME").unwrap_or_else(|_| "user".into()));
@@ -50,6 +70,7 @@ fn pipe_path() -> String {
 
 /// Opens the pipe. Retries only while the server is busy: any other error means
 /// there is nothing to talk to, and waiting would only delay Claude Code.
+#[cfg(windows)]
 fn connect() -> Option<std::fs::File> {
     use std::os::windows::io::AsRawHandle;
     let path = pipe_path();

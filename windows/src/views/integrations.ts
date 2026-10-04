@@ -8,6 +8,7 @@ import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { State, type AgentTask } from "../core/state";
 import { Bridge } from "../core/bridge";
+import { refreshIntegration } from "../island/integrations";
 
 /** Same shape as the Swift `timeAgo` computed properties. */
 export function timeAgo(value: unknown): string {
@@ -60,7 +61,8 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
   // The Claude Code pill is about hooks, not a key — the macOS wording would be
   // misleading here.
   const missing = task.id === "integration_claude" ? "Hooks not installed" : "Key not configured";
-  const label = error ?? (configured ? "Connected · loading…" : missing);
+  const stale=!!info?.lastSuccess && Date.now()-info.lastSuccess>10*60_000;
+  const label = error ? `Failed · ${error}` : !configured ? `Not connected · ${missing}` : info?.refreshing ? "Loading…" : !info?.loaded ? "Loading…" : stale ? "Stale · Refresh to update" : "Connected";
   const statusColor = error || !configured ? "#F4505E" : "#22C55E";
 
   const actions = h("div", { class: "int-actions" });
@@ -98,7 +100,8 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
         class: "link-btn",
         style: `color:${task.color}d9`,
         text: "Refresh",
-        onclick: () => void Bridge.refreshIntegration(task.id),
+        disabled:!!info?.refreshing || State.paused,
+        onclick: () => void refreshIntegration(task.id),
       }),
     );
   } else {
@@ -112,6 +115,7 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
     { class: "int-card" },
     header(task.color, task.id === "integration_claude" ? "VS Code" : task.name, "Integration"),
     h("div", { class: "int-status" }, dot(statusColor, 5), h("span", { text: label })),
+    info?.lastSuccess ? h("small",{class:"refresh-time",text:`Last updated ${timeAgo(info.lastSuccess)} ago`}) : null,
     actions,
   );
 }
@@ -201,32 +205,14 @@ function resendCard(): HTMLElement {
 
 // ── GitHub ────────────────────────────────────────────────────────────────────
 
-function statRow(icon: string, color: string, label: string, value: string): HTMLElement {
-  return h(
-    "div",
-    { class: "int-stat" },
-    h("i", { class: "int-stat-icon", style: `color:${color}` }, svg(icon, 10)),
-    h("span", { class: "int-stat-label", text: label }),
-    h("span", { class: "int-stat-value", text: value }),
-  );
-}
-
 function githubCard(): HTMLElement {
-  const d = get("integration_github");
-  const stars = Number(d.totalStars ?? 0);
-  const repos = Number(d.totalRepos ?? 0);
-  const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
-  return h(
-    "div",
-    { class: "int-card" },
-    header("#F4505E", "GitHub", "Overview"),
-    h(
-      "div",
-      { class: "int-stats" },
-      statRow(ICONS.star, "#F5A524", "Total stars", fmt(stars)),
-      statRow(ICONS.stack, "#6B7079", "Repositories", String(repos)),
-    ),
-  );
+  const rows=h("div",{class:"int-rows"});
+  const notifications=arr("integration_github","notifications").filter(item=>!State.isEventDismissed("integration_github",JSON.stringify(item.id)+":"+JSON.stringify(item.updatedAt)));
+  if(!notifications.length)rows.append(h("div",{class:"int-empty",text:"No mentions, assignments or review requests."}));
+  for(const item of notifications.slice(0,3))rows.append(h("div",{class:"notification-row"},h("button",{class:"next-task","data-focus-key":String(item.id),title:String(item.title),onclick:()=>void Bridge.openUrl(String(item.url))},
+    h("span",{class:"int-name",text:String(item.title)}),h("small",{title:`${item.repository} · ${String(item.reason).replaceAll("_"," ")}`,text:`${item.repository} · ${String(item.reason).replaceAll("_"," ")}`})),h("button",{class:"link-btn dismiss-notification","data-focus-key":String(item.id)+":dismiss",title:"Dismiss notification in Coucou",text:"×",onclick:()=>State.dismissEvent("integration_github",JSON.stringify(item.id)+":"+JSON.stringify(item.updatedAt))})));
+  return h("div",{class:"int-card notifications"},header("#F4505E","GitHub","Needs you"),rows,
+    h("div",{class:"int-actions"},h("button",{class:"link-btn",text:"Refresh",disabled:State.paused,onclick:()=>void refreshIntegration("integration_github")})));
 }
 
 // ── Stripe ────────────────────────────────────────────────────────────────────
@@ -391,7 +377,7 @@ export function hasIntegrationData(id: string): boolean {
     case "integration_resend":
       return arr(id, "emails").length > 0;
     case "integration_github":
-      return get(id).totalRepos != null;
+      return info.loaded;
     case "integration_stripe":
       return info.loaded;
     case "integration_notion":
@@ -403,7 +389,7 @@ export function hasIntegrationData(id: string): boolean {
   }
 }
 
-export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHooks): HTMLElement {
+function serviceCard(task: AgentTask, hooks: IntegrationCardHooks): HTMLElement {
   if (task.id === "integration_n8n") {
     const hasActivity = task.steps.length > 0 && (task.state === "finished" || task.state === "error");
     return hooks.detailOpen && hasActivity
@@ -431,4 +417,13 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
   }
 }
 
+export function renderIntegrationCard(task:AgentTask,hooks:IntegrationCardHooks):HTMLElement {
+  const card=serviceCard(task,hooks);const info=State.integrations[task.id];
+  if(info?.loaded && !info.error && task.id!=="integration_claude") {
+    const stale=!!info.lastSuccess && Date.now()-info.lastSuccess>10*60_000;
+    card.append(h("div",{class:"service-freshness"},h("span",{text:`${info.refreshing ? "Loading":stale ? "Stale":"Connected"} · ${info.lastSuccess ? timeAgo(info.lastSuccess):""}`,title:info.lastSuccess ? new Date(info.lastSuccess).toLocaleString():""}),
+      task.id!=="integration_github" ? h("button",{class:"link-btn",text:"Refresh",disabled:State.paused || !!info.refreshing,onclick:()=>void refreshIntegration(task.id)}):null));
+  }
+  return card;
+}
 export { clear };

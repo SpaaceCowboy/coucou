@@ -1,7 +1,7 @@
 // ClickUp reads and reviewed writes. The model can propose; only confirm can mutate.
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::windows::process::CommandExt;
+
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::time::Duration;
 
@@ -57,6 +57,7 @@ fn identifier(value: &str) -> Result<&str, String> {
 }
 
 async fn api(method: Method, path: &str, query: &[(&str, String)], body: Option<&Value>) -> Result<Value, String> {
+    crate::ensure_running()?;
     let token = secrets::get("clickup-api-token").ok_or("Connect ClickUp in Settings first.")?;
     let client = reqwest::Client::builder().timeout(Duration::from_secs(25))
         .redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "Could not connect to ClickUp")?;
@@ -123,6 +124,39 @@ fn task_view(task: &Value) -> Value {
         "status":task["status"]["status"],"priority":task["priority"]["id"],"due_date":task["due_date"],
         "assignees":task["assignees"].as_array().into_iter().flatten().map(|a| a["id"].clone()).collect::<Vec<_>>(),
         "list":task["list"]["name"],"listId":task["list"]["id"],"workspace":task["team_id"],"url":task["id"].as_str().map(|id| format!("https://app.clickup.com/t/{id}"))})
+}
+
+fn sort_next_tasks(tasks:&mut [Value]) {
+    tasks.sort_by(|a,b| {
+        let due=|v:&Value|v["due_date"].as_str().and_then(|s|s.parse::<u64>().ok()).or_else(||v["due_date"].as_u64()).unwrap_or(u64::MAX);
+        due(a).cmp(&due(b)).then_with(||a["name"].as_str().cmp(&b["name"].as_str()))
+    });
+}
+
+fn is_my_open_task(task:&Value,uid:u64)->bool{
+    !["closed","done"].contains(&task["status"]["type"].as_str().unwrap_or("")) && task["assignees"].as_array().is_some_and(|users|users.iter().any(|user|user["id"].as_u64().or_else(||user["id"].as_str().and_then(|id|id.parse().ok()))==Some(uid)))
+}
+
+pub async fn next_tasks(settings:&Settings)->Result<Value,String> {
+    if crate::integrations::PAUSED.load(std::sync::atomic::Ordering::Relaxed){return Err("Coucou is paused.".into());}
+    let list=identifier(&settings.clickup_list)?;
+    let user=api(Method::GET,"user",&[],None).await?;
+    let uid=user["user"]["id"].as_u64().ok_or("ClickUp could not identify your account.")?;
+    let mut tasks=Vec::new();
+    for page in 0..100 {
+        if crate::integrations::PAUSED.load(std::sync::atomic::Ordering::Relaxed){return Err("Coucou is paused.".into());}
+        let data=api(Method::GET,&format!("list/{list}/task"),&[("assignees[]",uid.to_string()),("include_closed","false".into()),("order_by","due_date".into()),("page",page.to_string())],None).await?;
+        let values=data["tasks"].as_array().ok_or("ClickUp returned an unreadable task list.")?;
+        tasks.extend(values.iter().filter(|task|is_my_open_task(task,uid)).cloned());
+        if values.len()<100 || data["last_page"]==true {break;}
+        if page==99{return Err("This list is too large to sort reliably. Choose a smaller default list.".into());}
+    }
+    sort_next_tasks(&mut tasks);
+    let tasks:Vec<_>=tasks.into_iter().take(3).map(|task|{
+        let view=task_view(&task);
+        json!({"id":view["id"],"name":view["name"],"status":view["status"],"url":view["url"],"dueDate":task["due_date"].as_str().and_then(|s|s.parse::<u64>().ok()).or_else(||task["due_date"].as_u64())})
+    }).collect();
+    Ok(json!({"tasks":tasks,"listId":list}))
 }
 
 fn validate_fields(action: &str, fields: &Value) -> Result<(), String> {
@@ -335,13 +369,12 @@ pub(crate) struct Client { deferred: std::collections::VecDeque<Value>, child: C
 impl Drop for Client { fn drop(&mut self) { let _ = self.child.kill(); let _ = self.child.wait(); } }
 impl Client {
     fn spawn(extra: &[String], chat: bool) -> Result<Self, String> {
-        let path = crate::find_on_path("codex").filter(|p| p.extension().is_some_and(|e| e == "exe"))
-            .or_else(|| std::env::var_os("LOCALAPPDATA").map(|p| std::path::PathBuf::from(p).join("Programs/OpenAI/Codex/bin/codex.exe")).filter(|p| p.is_file()))
-            .ok_or("Install Codex and sign in with ChatGPT first.")?;
+        let path=crate::platform::codex_executable().ok_or("Install Codex and sign in with ChatGPT first.")?;
         let cwd = crate::settings::local_dir().join(if chat { "chat" } else { "clickup" });
         std::fs::create_dir_all(&cwd).map_err(|_| "Could not prepare the Coucou connection")?;
         let mut command = Command::new(path);
-        command.args(["app-server","--stdio"]).current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).creation_flags(crate::CREATE_NO_WINDOW);
+        command.args(["app-server","--stdio"]).current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        crate::platform::quiet_command(&mut command);
         for option in ["features.apps=false", "features.shell_tool=false", "features.remote_plugin=false", "features.code_mode=false", "features.browser_use=false", "features.browser_use_external=false", "features.skill_mcp_dependency_install=false", "notify=[]", "project_doc_max_bytes=0"] {
             command.args(["-c", option]);
         }
@@ -522,5 +555,18 @@ mod tests {
             let reply = run_turn(&mut client, &mut session, "Do not call any tool. Reply exactly: ClickUp connection ready".into(), "This is a connection self-test".into()).await.unwrap();
             assert!(reply.text.contains("ClickUp connection ready")); assert!(reply.proposal.is_none());
         });
+    }
+}
+
+#[cfg(test)]
+mod next_task_tests {
+    use super::*;
+    #[test]
+    fn due_dates_order_overdue_then_upcoming_then_undated(){
+        let mut tasks=vec![json!({"name":"Undated","due_date":null}),json!({"name":"Upcoming","due_date":"2000"}),json!({"name":"Oldest overdue","due_date":"20"}),json!({"name":"Overdue","due_date":100}),json!({"name":"Invalid date","due_date":"broken"})];
+        sort_next_tasks(&mut tasks);assert_eq!(tasks.iter().map(|t|t["name"].as_str().unwrap()).collect::<Vec<_>>(),vec!["Oldest overdue","Overdue","Upcoming","Invalid date","Undated"]);
+        assert!(is_my_open_task(&json!({"status":{"type":"open"},"assignees":[{"id":12}]}),12));
+        assert!(!is_my_open_task(&json!({"status":{"type":"closed"},"assignees":[{"id":12}]}),12));
+        assert!(!is_my_open_task(&json!({"status":{"type":"open"},"assignees":[{"id":15}]}),12));
     }
 }

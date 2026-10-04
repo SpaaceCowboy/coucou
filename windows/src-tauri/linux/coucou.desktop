@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Coucou
+Comment=Quick questions and calm service updates with Mochi
+Exec=coucou --show
+Icon=coucou
+Terminal=false
+Categories=Utility;Development;
+StartupNotify=true
+StartupWMClass=coucou

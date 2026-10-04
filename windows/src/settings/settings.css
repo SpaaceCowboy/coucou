@@ -265,3 +265,4 @@ select option {
   background: rgba(245, 165, 36, 0.13);
   color: #fbc06a;
 }
+button:focus-visible,input:focus-visible,select:focus-visible { outline:2px solid #b6baff; outline-offset:2px; }

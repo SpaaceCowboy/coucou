@@ -25,11 +25,38 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::{ServerOptions};
 use tokio::sync::mpsc;
 
 use crate::island::WINDOW_LABEL;
 use crate::log;
+
+#[cfg(target_os="linux")]
+#[path="../../shared/relay_path.rs"]
+mod relay_path;
+
+#[cfg(target_os="linux")]
+pub fn start(app:AppHandle){
+    tauri::async_runtime::spawn(async move{
+        use std::os::unix::fs::{MetadataExt,PermissionsExt};
+        let path=match relay_path::socket_path(){Ok(p)=>p,Err(e)=>{log::line(e.to_string());return}};
+        if let Ok(meta)=std::fs::symlink_metadata(&path){
+            if meta.uid()!=unsafe{libc::geteuid()} || !std::os::unix::fs::FileTypeExt::is_socket(&meta.file_type()){return;}
+            if tokio::net::UnixStream::connect(&path).await.is_ok(){return;}
+            if std::fs::remove_file(&path).is_err(){return;}
+        }
+        let listener=match tokio::net::UnixListener::bind(&path){Ok(l)=>l,Err(e)=>{log::line(format!("Claude socket: {e}"));return}};
+        if std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o600)).is_err(){return;}
+        let slots=std::sync::Arc::new(tokio::sync::Semaphore::new(32));
+        loop{
+            let Ok((stream,_))=listener.accept().await else{break};
+            if !stream.peer_cred().is_ok_and(|cred|cred.uid()==unsafe{libc::geteuid()}){continue;}
+            let Ok(slot)=slots.clone().try_acquire_owned()else{continue};
+            let app=app.clone();tauri::async_runtime::spawn(async move{let _slot=slot;handle(app,stream).await;});
+        }
+    });
+}
 
 /// Slightly under coucou-hook's own 110 s wait, so we always answer first.
 const DECISION_TIMEOUT: Duration = Duration::from_secs(108);
@@ -57,12 +84,14 @@ pub struct Pending(pub Mutex<HashMap<String, mpsc::Sender<Reply>>>);
 static COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// `\\.\pipe\coucou-<sid>` — must match coucou-hook's `pipe_path()` exactly.
+#[cfg(windows)]
 pub fn pipe_name() -> String {
     let key = crate::win_user::current_user_sid()
         .unwrap_or_else(|| std::env::var("USERNAME").unwrap_or_else(|_| "user".into()));
     format!(r"\\.\pipe\coucou-{key}")
 }
 
+#[cfg(windows)]
 pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let name = pipe_name();
@@ -95,19 +124,20 @@ pub fn start(app: AppHandle) {
     });
 }
 
-async fn handle(app: AppHandle, mut pipe: NamedPipeServer) {
+async fn handle<P: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(app: AppHandle, mut pipe: P) {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
-        match pipe.read(&mut chunk).await {
-            Ok(0) => break,
-            Ok(n) => {
+        match tokio::time::timeout(Duration::from_secs(2),pipe.read(&mut chunk)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => {
                 buf.extend_from_slice(&chunk[..n]);
-                if buf.contains(&b'\n') || buf.len() > MAX_PAYLOAD {
+                if buf.len() > MAX_PAYLOAD { return; }
+                if buf.contains(&b'\n') {
                     break;
                 }
             }
-            Err(_) => return,
+            _ => return,
         }
     }
     let line = match buf.iter().position(|b| *b == b'\n') {
@@ -125,14 +155,27 @@ async fn handle(app: AppHandle, mut pipe: NamedPipeServer) {
         .unwrap_or_default()
         .to_string();
 
+    if payload.get("event_id").is_none(){
+        if let Some(tool_id)=payload.get("tool_use_id").and_then(Value::as_str){
+            payload["event_id"]=json!(format!("{}:{event}:{tool_id}",payload["session_id"].as_str().unwrap_or("")));
+        }
+    }
+
     if event != "PermissionRequest" {
         log::line(format!("hook {event}"));
         let _ = app.emit_to(WINDOW_LABEL, "hook", payload);
-        let _ = pipe.disconnect();
+
         return;
     }
 
     let id = format!("{}-{}", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed));
+    payload["request_id"] = json!(id);
+    let quiet = app.state::<crate::Shared>().settings.lock().unwrap().quiet_active();
+    if quiet || crate::integrations::PAUSED.load(Ordering::Relaxed) {
+        payload["terminal_fallback"] = json!(true);
+        let _ = app.emit_to(WINDOW_LABEL,"hook",payload);
+        return;
+    }
     let (tx, mut rx) = mpsc::channel::<Reply>(4);
     {
         let pending = app.state::<Pending>();
@@ -151,7 +194,7 @@ async fn handle(app: AppHandle, mut pipe: NamedPipeServer) {
         let _ = pipe.write_all(format!("{d}\n").as_bytes()).await;
         let _ = pipe.flush().await;
     }
-    let _ = pipe.disconnect();
+
 }
 
 /// Two waits: a short one for "the card is up", then the long one for a human.
@@ -206,7 +249,13 @@ fn send(app: &AppHandle, request_id: &str, reply: Reply, keep: bool) {
 
 /// The island has the card on screen; the long wait may begin.
 pub fn acknowledge(app: &AppHandle, request_id: &str) {
+    if app.state::<crate::Shared>().settings.lock().unwrap().quiet_active() || crate::integrations::PAUSED.load(Ordering::Relaxed){decline(app,request_id);return;}
     send(app, request_id, Reply::Ack, true);
+}
+
+pub fn release_all(app:&AppHandle){
+    let senders:Vec<_>=app.state::<Pending>().0.lock().unwrap().drain().map(|(_,tx)|tx).collect();
+    for sender in senders {let _=sender.try_send(Reply::Decline);}
 }
 
 /// Nobody can act on this one — paused, or another card already holds the view.
@@ -218,10 +267,25 @@ pub fn decline(app: &AppHandle, request_id: &str) {
 /// Called by the island's Allow / Deny buttons. Only ever a bare word: turning
 /// it into Claude Code's JSON is coucou-hook's job.
 pub fn answer(app: &AppHandle, request_id: &str, decision: &str) {
+    if app.state::<crate::Shared>().settings.lock().unwrap().quiet_active() || crate::integrations::PAUSED.load(Ordering::Relaxed){decline(app,request_id);return;}
     let word = match decision {
         "allow" | "always" => "allow",
         _ => "deny",
     };
     log::line(format!("decision id={request_id} {word}"));
     send(app, request_id, Reply::Decision(word.to_string()), false);
+}
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+    #[test]
+    fn permission_fallback_and_only_explicit_decisions(){
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async{
+            let (tx,mut rx)=mpsc::channel(4);tx.send(Reply::Decline).await.unwrap();assert!(wait_for_decision("quiet",&mut rx).await.is_none());
+            let (tx,mut rx)=mpsc::channel(4);tx.send(Reply::Ack).await.unwrap();tx.send(Reply::Decision("allow".into())).await.unwrap();assert_eq!(wait_for_decision("clicked",&mut rx).await.as_deref(),Some("allow"));
+            let (tx,mut rx)=mpsc::channel(4);tx.send(Reply::Ack).await.unwrap();tx.send(Reply::Decline).await.unwrap();assert!(wait_for_decision("paused",&mut rx).await.is_none());
+            let (tx,mut rx)=mpsc::channel(4);drop(tx);assert!(wait_for_decision("closed",&mut rx).await.is_none());
+        });
+    }
 }

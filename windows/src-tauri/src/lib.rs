@@ -6,15 +6,21 @@ mod codex;
 mod files;
 mod hooks;
 mod integrations;
+#[cfg(windows)]
 mod island;
+#[cfg(target_os="linux")]
+#[path="platform/island_linux.rs"]
+mod island;
+mod platform;
 mod log;
 mod pipe;
 mod secrets;
 mod settings;
 mod tray;
+#[cfg(windows)]
 mod win_user;
 
-use std::os::windows::process::CommandExt;
+
 use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -31,7 +37,12 @@ use pipe::Pending;
 use settings::Settings;
 
 /// Keeps spawned helpers from flashing a console window.
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+
+fn ensure_running()->Result<(),String>{if integrations::PAUSED.load(Ordering::Relaxed){Err("Coucou is paused. Resume to connect.".into())}else{Ok(())}}
+
+#[tauri::command]
+fn attachment_check(path:String,provider:String)->Result<(),String>{files::validate_attachment(&path,&provider)}
 
 pub struct Shared {
     pub settings: Mutex<Settings>,
@@ -45,6 +56,8 @@ pub struct BootInfo {
     screen: ScreenInfo,
     version: String,
     hook_path: String,
+    capabilities: platform::Capabilities,
+    show_requested: bool,
 }
 
 #[tauri::command]
@@ -56,13 +69,17 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
     BootInfo {
         settings,
         screen,
+        capabilities:platform::capabilities(),
+        show_requested:std::env::args().any(|arg|arg=="--show"),
         version: env!("CARGO_PKG_VERSION").to_string(),
         hook_path: settings::hook_exe_path().to_string_lossy().to_string(),
     }
 }
 
 #[tauri::command]
-fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
+fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) -> Result<(),String> {
+    settings::save(&settings).map_err(|e|format!("Could not save settings: {e}"))?;
+    let quiet=settings.quiet_active();
     let (screen_changed, autostart_changed) = {
         let mut current = shared.settings.lock().unwrap();
         let screen_changed = current.screen != settings.screen;
@@ -70,9 +87,7 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
         *current = settings.clone();
         (screen_changed, autostart_changed)
     };
-    if let Err(err) = settings::save(&settings) {
-        eprintln!("[coucou] could not save settings: {err}");
-    }
+    if quiet {pipe::release_all(&app);}
     if autostart_changed {
         let manager = app.autolaunch();
         let result = if settings.autostart { manager.enable() } else { manager.disable() };
@@ -86,6 +101,7 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
     }
     // Keep the other window in step (island ⇄ settings window).
     let _ = app.emit("settings-changed", settings);
+    Ok(())
 }
 
 /// Hidden island → shrink the window to the invisible wake strip and park the
@@ -108,6 +124,15 @@ fn set_island_rect(shared: State<Shared>, x: f64, y: f64, width: f64, height: f6
 }
 
 #[tauri::command]
+fn set_floating_size(app:AppHandle,width:f64,height:f64){
+    #[cfg(target_os="linux")]
+    if platform::is_wayland(){if let Some(win)=island::window(&app){
+        let _=win.set_size(tauri::LogicalSize::new(width.clamp(288.0,640.0)+16.0,height.clamp(32.0,300.0)+24.0));
+    }}
+    #[cfg(windows)] let _=(app,width,height);
+}
+
+#[tauri::command]
 fn focus_window(app: AppHandle, focused: bool) {
     let Some(win) = island::window(&app) else { return };
     island::set_activating(&win, focused);
@@ -124,65 +149,32 @@ fn reposition(app: AppHandle, shared: State<Shared>) {
 }
 
 #[tauri::command]
-fn open_url(url: String) {
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return;
-    }
-    let _ = Command::new("rundll32.exe")
-        .args(["url.dll,FileProtocolHandler", &url])
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn();
+fn open_url(url: String) -> Result<(),String> {
+    let parsed=reqwest::Url::parse(&url).map_err(|_|"Invalid link")?;
+    if !["http","https"].contains(&parsed.scheme()) || !parsed.username().is_empty() || parsed.password().is_some(){return Err("Only web links may be opened.".into());}
+    platform::open_target(parsed.as_str())
 }
 
 #[tauri::command]
-fn open_codex_chat(session_id: String) -> Result<(), String> {
-    let url = codex::chat_url(&session_id).ok_or("Invalid Codex session ID")?;
-    Command::new("rundll32.exe")
-        .args(["url.dll,FileProtocolHandler", &url])
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map(|_| ())
-        .map_err(|err| format!("Could not open Codex: {err}"))
+fn open_codex_chat(session_id:String)->Result<(),String>{
+    let url=codex::chat_url(&session_id).ok_or("Invalid Codex session ID")?;
+    if !platform::capabilities().codex_links {return Err("No Codex app is registered for chat links. Open the working folder or copy the session ID.".into());}
+    platform::open_target(&url)
 }
 
-/// "Open terminal" opens the working folder in VS Code when `code` is on PATH,
-/// and falls back to Explorer otherwise.
 #[tauri::command]
-fn open_in_vscode(path: Option<String>) -> bool {
-    // No `cmd /C` anywhere near this. The path is a project folder chosen by
-    // whoever is using Claude Code, and cmd would happily read `&`, `^` and `%`
-    // in a folder name as syntax. Finding the launcher ourselves and handing the
-    // path over as a separate argument keeps it a path.
-    if let Some(code) = find_on_path("code") {
-        let mut cmd = Command::new(code);
-        if let Some(p) = path.as_deref().filter(|p| !p.is_empty()) {
-            cmd.arg(p);
-        }
-        if cmd.creation_flags(CREATE_NO_WINDOW).spawn().is_ok() {
-            return true;
-        }
+fn open_in_vscode(path:Option<String>)->bool{
+    if path.as_deref().is_some_and(|p|!p.is_empty() && !std::path::Path::new(p).is_absolute()){return false;}
+    if let Some(code)=platform::find_on_path("code") {
+        let mut command=Command::new(code);
+        if let Some(p)=path.as_deref().filter(|p|!p.is_empty()){command.arg(p);}
+        if platform::quiet_command(&mut command).spawn().is_ok(){return true;}
     }
-    if let Some(p) = path.as_deref().filter(|p| !p.is_empty()) {
-        let _ = Command::new("explorer").arg(p).spawn();
+    if let Some(p)=path.as_deref().filter(|p|!p.is_empty()) {
+        #[cfg(windows)] {let mut command=Command::new("explorer");command.arg(p);let _=platform::quiet_command(&mut command).spawn();}
+        #[cfg(not(windows))] {let _=platform::open_target(p);}
     }
     false
-}
-
-/// Our own `where`: walks %PATH% against %PATHEXT%, no shell involved.
-/// Rust quotes arguments correctly for `.cmd`/`.bat` targets since 1.77, so
-/// spawning `code.cmd` directly is safe.
-fn find_on_path(stem: &str) -> Option<std::path::PathBuf> {
-    let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
-    let dirs = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&dirs) {
-        for ext in exts.split(';').filter(|e| !e.is_empty()) {
-            let candidate = dir.join(format!("{stem}{}", ext.to_lowercase()));
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
 }
 
 #[tauri::command]
@@ -193,8 +185,9 @@ fn quit_app(app: AppHandle) {
 /// Tray → Pause. Paused means paused: the pollers stop talking to the network,
 /// not just the island stopping showing things.
 #[tauri::command]
-fn set_paused(paused: bool) {
+fn set_paused(app:AppHandle, paused: bool) {
     integrations::set_paused(paused);
+    if paused{pipe::release_all(&app);}
 }
 
 #[tauri::command]
@@ -204,17 +197,20 @@ fn start_codex_monitor(app: AppHandle, session_ids: Vec<String>) {
 
 #[tauri::command]
 async fn clickup_setup(workspace: Option<String>) -> Result<serde_json::Value, String> {
+    ensure_running()?;
     clickup::setup(workspace).await
 }
 
 #[tauri::command]
 async fn clickup_send(shared: State<'_, Shared>, clickup: State<'_, clickup::Clickup>, query: String, local_time: String, selected_task: Option<String>) -> Result<clickup::Reply, String> {
+    ensure_running()?;
     let settings = shared.settings.lock().unwrap().clone();
     clickup::send(&clickup, &settings, query, local_time, selected_task).await
 }
 
 #[tauri::command]
 async fn clickup_confirm(shared: State<'_, Shared>, clickup: State<'_, clickup::Clickup>, id: u64) -> Result<serde_json::Value, String> {
+    ensure_running()?;
     let settings = shared.settings.lock().unwrap().clone();
     clickup::confirm(&clickup, &settings, id).await
 }
@@ -289,6 +285,7 @@ async fn chat_send(
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
+    ensure_running()?;
     let settings = shared.settings.lock().unwrap().clone();
     match settings.chat_provider.as_str() {
         "claude" => claude::send(&chat, &settings.model, query, context).await,
@@ -317,20 +314,36 @@ fn secret_present(key: String) -> bool {
 }
 
 #[tauri::command]
+fn secret_status(key:String)->serde_json::Value {
+    match secrets::status(&key){Ok(present)=>serde_json::json!({"present":present,"error":null}),Err(error)=>serde_json::json!({"present":false,"error":error})}
+}
+
+#[tauri::command]
+fn chat_status(shared:State<Shared>)->serde_json::Value {
+    let settings=shared.settings.lock().unwrap();
+    let status=if settings.chat_provider=="claude" {secrets::status("anthropic-api-key")}else{Ok(platform::codex_executable().is_some())};
+    match status{Ok(ready)=>serde_json::json!({"configured":ready}),Err(error)=>serde_json::json!({"configured":false,"error":error})}
+}
+
+#[tauri::command]
 fn secret_set(key: String, value: String) -> Result<(), String> {
-    secrets::set(&key, &value)
+    secrets::set(&key, &value)?;
+    if key=="github-token"{integrations::reset_github();}
+    Ok(())
 }
 
 #[tauri::command]
 fn secret_clear(key: String) -> Result<(), String> {
-    secrets::clear(&key)
+    secrets::clear(&key)?;
+    if key=="github-token"{integrations::reset_github();}
+    Ok(())
 }
 
 /// Opens the configured n8n instance — the URL lives in the Credential Manager.
 #[tauri::command]
 fn open_n8n() {
     if let Some(url) = secrets::get("n8n-url") {
-        open_url(url);
+        let _=open_url(url);
     }
 }
 
@@ -353,6 +366,7 @@ fn log_line(message: String) {
 /// for the *same* arguments as the island (see `additionalBrowserArgs` in
 /// tauri.conf.json) — a mismatch makes the second window come up blank, with no
 /// error anywhere.
+#[cfg(windows)]
 const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required";
 
 /// In a dev build the pages are served by Vite, so the second window needs the
@@ -373,14 +387,15 @@ fn settings_page_url(app: &AppHandle) -> WebviewUrl {
 /// one that exists before the island's webview does.
 fn create_settings_window(app: &AppHandle) {
     let url = settings_page_url(app);
-    match WebviewWindowBuilder::new(app, "settings", url)
-        .additional_browser_args(BROWSER_ARGS)
+    let builder=WebviewWindowBuilder::new(app,"settings",url);
+    #[cfg(windows)] let builder=builder.additional_browser_args(BROWSER_ARGS);
+    let builder=if platform::is_wayland(){builder}else{builder.center()};
+    match builder
         .title("Settings — Coucou")
         .inner_size(560.0, 680.0)
         .min_inner_size(460.0, 480.0)
         .resizable(true)
         .visible(false)
-        .center()
         .build()
     {
         Ok(win) => {
@@ -418,6 +433,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(win)=island::window(app){let _=win.show();let _=win.unminimize();}
             let _ = app.emit_to(island::WINDOW_LABEL, "tray", "open".to_string());
         }))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
@@ -439,6 +455,7 @@ pub fn run() {
             save_settings,
             set_collapsed,
             set_island_rect,
+            set_floating_size,
             focus_window,
             reposition,
             open_url,
@@ -455,7 +472,10 @@ pub fn run() {
             chat_send,
             chat_reset,
             ingest_file,
+            attachment_check,
             secret_present,
+            secret_status,
+            chat_status,
             secret_set,
             secret_clear,
             refresh_integration,
@@ -465,11 +485,21 @@ pub fn run() {
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
-            tray::build(&handle)?;
+            if let Err(err)=tray::build(&handle){log::line(format!("Tray unavailable: {err}"));}
             // Before the island: see create_settings_window.
             create_settings_window(&handle);
 
             if let Some(win) = island::window(&handle) {
+                #[cfg(target_os="linux")]
+                {
+                    let hidden=win.clone();let app_handle=handle.clone();
+                    win.on_window_event(move |event|{
+                        if let tauri::WindowEvent::CloseRequested{api,..}=event{
+                            api.prevent_close();pipe::release_all(&app_handle);let _=hidden.hide();
+                            let _=app_handle.emit_to(island::WINDOW_LABEL,"tray","hide".to_string());
+                        }
+                    });
+                }
                 island::make_non_activating(&win);
                 island::apply_geometry(&handle, &loaded.screen, false);
                 let _ = win.show();

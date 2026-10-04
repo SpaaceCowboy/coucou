@@ -165,6 +165,7 @@ const FONT = `system-ui, "Segoe UI Variable Text", "Segoe UI", sans-serif`;
 // ── Engine ────────────────────────────────────────────────────────────────────
 
 export class BotEngine {
+  reducedMotion=false;
   isMini = false;
   /** Solid body colour for mini bots / integration pills (null = Mochi gradient). */
   bodyColor: RGB | null = null;
@@ -231,6 +232,7 @@ export class BotEngine {
     if (!this.locks.has("tint")) this.tint = this.cfg.tint;
     if (!this.locks.has("tilt")) this.tgTilt = this.cfg.tilt;
     this.setBadge(this.cfg.badge);
+    if(this.reducedMotion)return;
 
     switch (next) {
       case "finished":
@@ -261,6 +263,7 @@ export class BotEngine {
   }
 
   setBadge(b: Badge | null) {
+    if(this.reducedMotion){this.badge=b;this.badgeS=b ? 1:0;return;}
     const key = b ? `${b.kind}-${b.color.join(",")}` : "none";
     if (key === this.badgeKey) return;
     this.badgeKey = key;
@@ -425,6 +428,7 @@ export class BotEngine {
   }
 
   emit(type: Particle["type"], count: number) {
+    if(this.reducedMotion)return;
     for (let i = 0; i < count; i++) {
       const isZ = type === "z";
       this.particles.push({
@@ -475,6 +479,7 @@ export class BotEngine {
   // ── Tweens ──────────────────────────────────────────────────────────────────
 
   anim(prop: PropKey, keys: TweenKey[], onComplete?: () => void) {
+    if(this.reducedMotion){this[prop]=keys.at(-1)?.[0] ?? this[prop];onComplete?.();return;}
     this.tweens.set(prop, {
       prop, keys, index: 0, from: this[prop], startMs: performance.now(), onComplete,
     });
@@ -484,6 +489,13 @@ export class BotEngine {
   // ── Update ──────────────────────────────────────────────────────────────────
 
   update(dt: number) {
+    if(this.reducedMotion){
+      this.tweens.clear();this.locks.clear();this.particles=[];
+      this.col=this.colT;this.tint=this.cfg.tint;this.tilt=this.cfg.tilt;
+      this.ox=0;this.oy=0;this.roll=0;this.open=1;this.sx=1;this.sy=1;
+      this.yaw=0;this.pitch=0;this.badge=this.cfg.badge;this.badgeS=this.badge ? 1:0;
+      return;
+    }
     const n = now();
     const nowMs = performance.now();
 

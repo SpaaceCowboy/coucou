@@ -13,7 +13,8 @@ function module(file, imports = {}) {
 }
 const saved = new Map();
 globalThis.localStorage = {getItem:k=>saved.get(k)??null,setItem:(k,v)=>saved.set(k,v)};
-const stateUrl = module('core/state.ts');
+const inboxUrl = module('core/inbox.ts');
+const stateUrl = module('core/state.ts', {'./inbox': inboxUrl});
 const eventUrl = module('core/agent-events.ts');
 const bridgeUrl = url(`export const calls = [];
   export const Bridge = {
@@ -42,6 +43,8 @@ const alerts = [];
 let reveals = 0;
 const island = { alert: view => alerts.push(view), reveal() { reveals++; }, setView: view => alerts.push(view), dropPin() {} };
 State.settings.showIntegrationPills = true;
+State.settings.hooksInstalled = true;
+State.integrations.integration_claude={configured:true,loaded:true,data:{},error:null};
 State.loadIntegrationTasks();
 const originalIds = State.tasks.map(t => t.id);
 const claude = (name, fields = {}) => {

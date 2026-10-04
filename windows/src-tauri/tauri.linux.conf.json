@@ -1,0 +1,48 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "island",
+        "title": "Coucou",
+        "url": "index.html",
+        "width": 720,
+        "height": 320,
+        "resizable": false,
+        "decorations": true,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "focus": false,
+        "visible": true,
+        "center": false,
+        "maximizable": false,
+        "minimizable": true,
+        "closable": true,
+        "dragDropEnabled": true
+      }
+    ]
+  },
+  "bundle": {
+    "targets": [
+      "deb"
+    ],
+    "resources": {
+      "../target/release/coucou-hook": "coucou-hook"
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0t64",
+          "libayatana-appindicator3-1",
+          "libsecret-1-0",
+          "libglib2.0-bin",
+          "xdg-utils",
+          "gnome-keyring"
+        ],
+        "desktopTemplate": "linux/coucou.desktop"
+      }
+    }
+  }
+}

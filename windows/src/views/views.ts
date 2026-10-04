@@ -2,7 +2,7 @@
 // colours and wording are copied from the Swift views so both platforms read
 // identically.
 
-import { h, svg, clear, dot } from "./dom";
+import { preservePosition, h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { Ticker } from "./ticker";
 import { sessionSourceLabel } from "../core/agent-events";
@@ -12,6 +12,10 @@ import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { Bridge } from "../core/bridge";
 import { buildClickup } from "./clickup";
 import { buildPrompt } from "./chat";
+import { relativeTime } from "../core/inbox";
+import { setQuiet,releasePendingApproval } from "../core/quiet";
+import { openSession, sessionOpenLabel, copySessionId } from "../core/session";
+import { buildNextTasks } from "./next-tasks";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 
@@ -83,9 +87,10 @@ function stack(padLeft: number, padRight: number, ...children: Node[]): HTMLElem
 
 export function buildHeader(actions: ViewActions): ViewHost {
   const tabHome = h("button", { class: "tab", title: "Overview", onclick: () => go("overview") }, svg(ICONS.house, 13));
-  const tabChat = h("button", { class: "tab", title: "Ask", onclick: () => go("prompt") }, svg(ICONS.bubble, 13));
-  const tabHistory = h("button", { class: "tab", title: "Recent alerts", onclick: () => go("history"), text: "◷" });
-  const tabDrop = h("button", { class: "tab", title: "Drop", onclick: () => go("upload") }, svg(ICONS.plus, 13));
+  const tabChat = h("button", { class: "tab", title: "Ask a quick question", onclick: () => go("prompt") }, svg(ICONS.bubble, 13));
+  const tabHistory = h("button", { class: "tab inbox-tab", title: "Attention inbox", onclick: () => go("history"), text: "◷" });
+  const unread=h("span",{class:"unread-count","aria-hidden":"true"});tabHistory.append(unread);
+  const tabDrop = h("button", { class: "tab", title: "Help with a file", onclick: () => go("upload") }, svg(ICONS.plus, 13));
 
   const gearBtn = h("button", { title: "Settings", onclick: () => go("settings") }, svg(ICONS.gear, 14));
   const soundBtn = h("button", { title: "Mute", onclick: () => actions.toggleSound() }, svg(ICONS.speakerOn, 14));
@@ -106,15 +111,20 @@ export function buildHeader(actions: ViewActions): ViewHost {
     el,
     sync() {
       const v = State.view;
+      unread.textContent=State.unreadCount ? String(Math.min(99,State.unreadCount)) : "";
+      tabHistory.setAttribute("aria-label",`Attention inbox, ${State.unreadCount} unread`);
       tabHome.classList.toggle("on", v === "overview" || v === "empty");
       tabHistory.classList.toggle("on", v === "history");
       tabChat.classList.toggle("on", v === "prompt");
       tabDrop.classList.toggle("on", v === "upload");
       gearBtn.classList.toggle("on", v === "settings");
+      for(const button of [tabHome,tabHistory,tabChat,tabDrop,gearBtn])button.setAttribute("aria-pressed",String(button.classList.contains("on")));
       clear(gearBtn);
       gearBtn.append(svg(v === "settings" ? ICONS.gearFill : ICONS.gear, 14));
       clear(soundBtn);
       soundBtn.append(svg(State.settings.soundEnabled ? ICONS.speakerOn : ICONS.speakerOff, 14));
+      soundBtn.setAttribute("aria-label",State.settings.soundEnabled ? "Mute sounds":"Enable sounds");
+      soundBtn.title=State.settings.soundEnabled ? "Mute sounds":"Enable sounds";
       el.style.opacity = v === "confused" ? "0" : "1";
     },
   };
@@ -146,6 +156,7 @@ function buildOverview(actions: ViewActions): ViewHost {
   let lastFocus: string | null = null;
   let mode: "ticker" | "card" | null = null;
   let cardKey = "";
+  let whoKey = "";
 
   const hooks: IntegrationCardHooks = {
     get detailOpen() {
@@ -184,12 +195,9 @@ function buildOverview(actions: ViewActions): ViewHost {
         && (task.state !== "idle" || task.steps.length > 0 || task.source === "codex");
 
       if (task?.source === "clickup") {
-        if (mode !== "card" || cardKey !== "clickup") {
-          mode = "card"; cardKey = "clickup"; clear(leftBody);
-          leftBody.append(stack(108, 12, h("div", { class: "title", text: "ClickUp" }),
-            h("div", { class: "sub", text: "Find, create, edit or delete a task." }),
-            btn("Ask ClickUp", "primary", () => actions.setView("clickup"))));
-        }
+        if(mode!=="card"){mode="card";cardKey="";}
+        const nextKey=JSON.stringify(State.integrations.integration_clickup);
+        if(cardKey!==nextKey){cardKey=nextKey;preservePosition(leftBody,()=>{clear(leftBody);leftBody.append(buildNextTasks(()=>actions.setView("clickup")));});}
       } else if (task && sessionActive) {
         if (mode !== "ticker") {
           clear(leftBody);
@@ -197,7 +205,8 @@ function buildOverview(actions: ViewActions): ViewHost {
           mode = "ticker";
           cardKey = "";
         }
-        clear(who);
+        const newWhoKey=[task.id,task.name,task.state,task.sessionCwd,task.steps.at(-1),State.capabilities.codexLinks].join("|");
+        if(newWhoKey!==whoKey){whoKey=newWhoKey;preservePosition(who,()=>{clear(who);
         const codex = task.source === "codex";
         tickerBody.classList.toggle("codex-summary", codex);
         who.append(dot(task.color, 7), h("span", { class: "name", text: task.name, title: task.name }));
@@ -207,7 +216,8 @@ function buildOverview(actions: ViewActions): ViewHost {
           // Keep activity available on hover without presenting tool names as task progress.
           who.append(h("div", { class: "session-status" },
             h("span", { class: "tool", text: "Codex · " + status, title: task.steps.at(-1) || status }),
-            h("button", { class: "link-btn open-chat", text: "Open chat", onclick: () => actions.openSession() })));
+          h("button", { class: "link-btn open-chat", text: sessionOpenLabel(), onclick: () => actions.openSession() }),
+          !State.capabilities.codexLinks ? h("button",{class:"link-btn",text:"Copy ID",title:task.sessionId ?? "",onclick:(event:Event)=>void copySessionId(event.currentTarget as HTMLElement,task.sessionId)}):null));
 
         } else {
           who.append(h("span", { class: "tool", text: sessionSourceLabel(task.source) }));
@@ -215,19 +225,19 @@ function buildOverview(actions: ViewActions): ViewHost {
             class: "count", text: `${Math.min(task.stepIndex + 1, task.steps.length)}/${task.steps.length}`,
           }));
         }
+        });}
         ticker.sync(task);
       } else if (task) {
         const info = State.integrations[task.id];
         const key = [
           task.id, detailOpen, task.state, task.steps.join("|"),
-          info?.loaded, info?.error, info?.configured,
+          info?.loaded, info?.error, info?.configured, info?.refreshing, info?.lastSuccess,State.notificationRevision,
           JSON.stringify(info?.data ?? {}),
         ].join("~");
         if (key !== cardKey) {
           cardKey = key;
           mode = "card";
-          clear(leftBody);
-          leftBody.append(renderIntegrationCard(task, hooks));
+          preservePosition(leftBody,()=>{clear(leftBody);leftBody.append(renderIntegrationCard(task, hooks));});
         }
       }
 
@@ -237,8 +247,7 @@ function buildOverview(actions: ViewActions): ViewHost {
       const pillKey = others.map((t) => `${t.id}:${t.name}:${t.sessionCwd}:${t.state}:${t.pillBadge ?? ""}`).join("|");
       if (pillKey !== pillIds) {
         pillIds = pillKey;
-        clear(pills);
-        for (const t of others) pills.append(buildPill(t, actions));
+        preservePosition(pills,()=>{clear(pills);for (const t of others) pills.append(buildPill(t, actions));});
         pruneMiniBots();
       }
     },
@@ -250,7 +259,7 @@ function buildPill(task: AgentTask, actions: ViewActions): HTMLElement {
   const canvas = createMiniBot(task, 24);
   const pill = h(
     "div",
-    { class: "pill", role: "button", tabindex: "0", title: task.name + (task.sessionCwd ? " · " + task.sessionCwd : ""), onclick: () => actions.setFocus(task.id), onkeydown: (event: Event) => { const e = event as KeyboardEvent; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); actions.setFocus(task.id); } } },
+    { class: "pill", "data-task-id":task.id, role: "button", tabindex: "0", title: task.name + (task.sessionCwd ? " · " + task.sessionCwd : ""), onclick: () => actions.setFocus(task.id), onkeydown: (event: Event) => { const e = event as KeyboardEvent; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); actions.setFocus(task.id); } } },
     canvas,
     h("span", { class: "lbl" }, h("span", {text:label}),
       task.source === "codex" ? h("small",{text:task.sessionCwd?.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "Codex"}) : null),
@@ -301,7 +310,7 @@ function buildEmpty(actions: ViewActions): ViewHost {
       "div",
       { style: "display:flex;flex-direction:column;gap:5px" },
       h("div", { class: "title", text: "Nothing running right now." }),
-      h("div", { class: "sub", text: "Drop a file or window, or ask me anything." }),
+      h("div", { class: "sub", text: "Drop a file, check your inbox, or ask a quick question." }),
     ),
     h("div", { class: "grow" }),
     btn("Ask Mochi", "primary", () => actions.setView("prompt")),
@@ -346,6 +355,7 @@ function buildQuestion(actions: ViewActions): ViewHost {
   const who = h("div");
   const title = h("div", { class: "title" });
   const open = btn("Open chat", "primary", () => actions.openSession());
+  const copy=h("button",{class:"link-btn",text:"Copy ID",onclick:(event:Event)=>void copySessionId(event.currentTarget as HTMLElement,State.focusTask?.sessionId)});
   const note = h("div", { class: "sub", text: "Answer in your terminal — Coucou can't reply for you yet." });
   const row = h("div", { class: "actions" });
   const el = h("div", { class: "view" }, card("cyan", stack(116, 16, who, title, row)));
@@ -355,9 +365,11 @@ function buildQuestion(actions: ViewActions): ViewHost {
       clear(who);
       who.append(agentWho(State.focusTask, `${sessionSourceLabel(State.focusTask?.source)} needs attention`));
       const task = State.focusTask;
+      open.querySelector("span")!.textContent=sessionOpenLabel();
       title.textContent = task?.steps.at(-1) ?? "Waiting for your input.";
       const content = task?.source === "codex" ? open : note;
       if (row.firstChild !== content) row.replaceChildren(content);
+      if(task?.source==="codex" && !State.capabilities.codexLinks && !copy.parentElement)row.append(copy);
     },
   };
 }
@@ -369,21 +381,23 @@ function buildError(actions: ViewActions): ViewHost {
   const title = h("div", { class: "title", text: "Workflow stopped." });
   const detail = h("div", { class: "detail" });
   const open = btn("Open in n8n", "secondary", () => actions.openTarget());
+  const copy=h("button",{class:"link-btn",text:"Copy ID",onclick:(event:Event)=>void copySessionId(event.currentTarget as HTMLElement,State.focusTask?.sessionId)});
   const row = h("div", { class: "actions" },
-    btn("Retry", "primary", () => actions.setView(State.defaultView())),
     open,
+    copy,
   );
   const el = h("div", { class: "view" }, card("red", stack(116, 16, who, title, detail, row)));
   return {
     el,
     sync() {
       const task = State.focusTask;
+      copy.hidden=task?.source!=="codex" || State.capabilities.codexLinks;
       clear(who);
       who.append(agentWho(task, sessionSourceLabel(task?.source)));
       title.textContent = task?.source === "n8n" ? "Workflow stopped."
         : task?.state === "working" ? "A command or tool failed." : "Session stopped on an error.";
       detail.textContent = task?.steps.at(-1) ?? "No detail available.";
-      open.querySelector("span")!.textContent = task?.source === "codex" ? "Open chat"
+      open.querySelector("span")!.textContent = task?.source === "codex" ? sessionOpenLabel()
         : task?.source === "n8n" ? "Open in n8n" : "Open terminal";
     },
   };
@@ -395,8 +409,10 @@ function buildFinished(actions: ViewActions): ViewHost {
   const who = h("div");
   const title = h("div", { class: "title" });
   const open = btn("Open terminal", "primary", () => actions.openSession());
+  const copy=h("button",{class:"link-btn",text:"Copy ID",onclick:(event:Event)=>void copySessionId(event.currentTarget as HTMLElement,State.focusTask?.sessionId)});
   const row = h("div", { class: "actions" },
     open,
+    copy,
     btn("OK", "secondary", () => actions.collapse()),
   );
   const el = h("div", { class: "view" }, card("green", stack(116, 16, who, title, row)));
@@ -405,7 +421,8 @@ function buildFinished(actions: ViewActions): ViewHost {
     sync() {
       clear(who);
       who.append(agentWho(State.focusTask, `${sessionSourceLabel(State.focusTask?.source)} finished`));
-      open.querySelector("span")!.textContent = State.focusTask?.source === "codex" ? "Open chat" : "Open terminal";
+      copy.hidden=State.focusTask?.source!=="codex" || State.capabilities.codexLinks;
+      open.querySelector("span")!.textContent = State.focusTask?.source === "codex" ? sessionOpenLabel() : "Open terminal";
       title.textContent = State.focusTask?.steps.at(-1) ?? "Session finished";
     },
   };
@@ -425,9 +442,9 @@ function buildConfused(): ViewHost {
 
 // ── Note ──────────────────────────────────────────────────────────────────────
 
-function buildNote(): ViewHost {
+function buildNote(actions:ViewActions): ViewHost {
   const title = h("div", { class: "title" });
-  const el = h("div", { class: "view" }, card(null, h("div", { class: "stack", style: "padding:0 18px 0 98px" }, title)));
+  const el = h("div", { class: "view" }, card(null, h("div", { class: "stack", style: "padding:0 18px 0 98px" }, title,h("button",{class:"link-btn",text:"Back",onclick:()=>actions.setView(State.defaultView())}))));
   return {
     el,
     sync() {
@@ -439,9 +456,9 @@ function buildNote(): ViewHost {
 // ── In-island settings ────────────────────────────────────────────────────────
 
 function buildSettings(actions: ViewActions): ViewHost {
-  const soundSwitch = h("button", { class: "switch", onclick: () => actions.toggleSound() });
+  const soundSwitch = h("button", { class: "switch", "aria-label":"Sound", onclick: () => actions.toggleSound() });
   const volume = h("input", {
-    type: "range", min: "0", max: "0.2", step: "0.005",
+    type: "range", min: "0", max: "0.2", step: "0.005", "aria-label":"Sound volume",
     oninput: (e: Event) => actions.setVolume(Number((e.target as HTMLInputElement).value)),
   }) as HTMLInputElement;
   const autoLabel = h("span", {});
@@ -450,10 +467,17 @@ function buildSettings(actions: ViewActions): ViewHost {
   );
   const claudeBadge = h("span", { class: "status-badge" });
   const apiBadge = h("span", { class: "status-badge" });
+  const quiet=h("select",{"aria-label":"Quiet mode",class:"quiet-select"}) as HTMLSelectElement;
+  for(const [value,text] of [["off","Quiet mode off"],["0","Until I turn it off"],["30","Quiet for 30 minutes"],["60","Quiet for 1 hour"],["120","Quiet for 2 hours"]])quiet.append(h("option",{value,text}));
+  quiet.onchange=()=>setQuiet(quiet.value==="off" ? null : quiet.value==="0" ? 0 : Date.now()+Number(quiet.value)*60_000);
 
   const rows = h(
     "div",
     { class: "settings-rows" },
+    h("div",{class:"settings-row"},quiet),
+    h("div",{class:"settings-row"},h("button",{class:"link-btn",text:"Pause / Resume monitoring",onclick:()=>{
+      State.paused=!State.paused;if(State.paused)releasePendingApproval("Paused");void Bridge.setPaused(State.paused);State.notify();
+    }}),h("span",{class:"monitoring-status"})),
     h("div", { class: "settings-row" }, soundSwitch, h("span", { text: "Sound" }), volume),
     h(
       "div",
@@ -484,7 +508,10 @@ function buildSettings(actions: ViewActions): ViewHost {
     el,
     sync() {
       const s = State.settings;
+      rows.querySelector(".monitoring-status")!.textContent=State.paused ? "Paused":"Monitoring";
+      if(document.activeElement!==quiet)quiet.value=State.quiet ? s.quietUntil===0 ? "0" : String([30,60,120].find(m=>(s.quietUntil!-Date.now())/60_000<=m) ?? 120) : "off";
       soundSwitch.classList.toggle("on", s.soundEnabled);
+      soundSwitch.setAttribute("aria-pressed",String(s.soundEnabled));
       volume.value = String(s.soundVolume);
       volume.style.opacity = s.soundEnabled ? "1" : "0.4";
       autoLabel.textContent = `Auto-close · ${Math.round(s.autoCloseInterval)}s`;
@@ -495,7 +522,8 @@ function buildSettings(actions: ViewActions): ViewHost {
         h("span", { text: "Claude Code" }),
       );
       clear(apiBadge);
-      apiBadge.append(dot("#F4505E", 6), h("span", { text: "API" }));
+      apiBadge.append(dot(State.chatError ? "#F4505E":State.chatConfigured ? "#22C55E":"#F5A524", 6), h("span", { text: `${s.chatProvider === "codex" ? "Codex":"Claude"} · ${State.chatError ? "Failed":State.chatLastSuccess ? "Connected":State.chatConfigured ? "Configured":"Connect in Settings"}` }));
+      apiBadge.title=State.chatError ?? (State.chatLastSuccess ? `Last reply ${new Date(State.chatLastSuccess).toLocaleString()}`:"Provider configuration status");
     },
   };
 }
@@ -516,19 +544,34 @@ function buildHistory(actions: ViewActions): ViewHost {
   const list = h("div", { class: "history-list" });
   let key = "";
   return { el: h("div", { class: "view" }, card(null, h("div", { class: "utility-body" },
-    h("div", { class: "title", text: "Recent alerts" }), list))), sync() {
-    const next = State.historyStorageError + JSON.stringify(State.recentAlerts);
-    if (key === next) return; key = next; clear(list);
+    h("div", { class: "title", text: "Attention inbox" }), list))), sync() {
+    const next = State.historyStorageError + Math.floor(Date.now()/60_000) + JSON.stringify(State.recentAlerts);
+    if (key === next) return; key = next;
+    const scroll=list.scrollTop;
+    const active=document.activeElement as HTMLElement|null;
+    const focusKey=active?.dataset.inboxFocus;
+    clear(list);
     if (State.historyStorageError) list.append(h("div",{class:"sub",text:State.historyStorageError}));
-    if (!State.recentAlerts.length) list.append(h("div", { class: "sub", text: "No recent alerts." }));
-    for (const a of State.recentAlerts) list.append(h("div", { class: "history-row" },
+    if (!State.recentAlerts.length) list.append(h("div", { class: "sub", text: "All caught up. Useful updates will appear here." }));
+    for (const a of State.recentAlerts) {
+      const open=h("button",{class:"btn secondary",text:a.action?.kind==="session" ? sessionOpenLabel():"Open",disabled:!a.action || (a.action.kind==="session" && !State.capabilities.codexLinks && !a.action.cwd),"data-inbox-focus":a.id+":open",onclick:()=>{
+        State.markAlertRead(a.id);
+        const target=a.action;
+        if(target?.kind==="url")void Bridge.openUrl(target.url);
+        else if(target?.kind==="session")openSession(target.sessionId,target.cwd);
+        else if(target?.kind==="folder")void Bridge.openInVSCode(target.path);
+        else if(target?.kind==="settings")actions.openSettingsWindow();
+        else if(target?.kind==="clickup"){State.setFocus("integration_clickup");actions.setView("clickup");}
+      }});
+      const read=h("button",{class:"link-btn",text:"Mark read",disabled:a.read,"data-inbox-focus":a.id+":read",onclick:()=>State.markAlertRead(a.id)});
+      list.append(h("div", { class: `history-row ${a.read ? "":"unread"}` },
       h("div", { class: "grow" }, h("div", { class: "name", text: a.title + " · " + a.kind }),
-        h("div", { class: "sub", text: a.message }), h("small", { text: new Date(a.time).toLocaleString() })),
-      h("button", { class: "btn secondary", text: a.source === "codex" ? "Open chat" : a.source === "clickup" ? "ClickUp" : "Open folder",
-        onclick: () => { if (a.source === "codex" && a.sessionId) void Bridge.openCodexChat(a.sessionId);
-          else if (a.source === "clickup") { State.setFocus("integration_clickup"); actions.setView("clickup"); }
-          else void Bridge.openInVSCode(a.cwd ?? null); } }),
-      h("button", { class: "link-btn", text: "×", title: "Dismiss alert", onclick: () => State.dismissAlert(a.id) })));
+        h("div", { class: "sub", text: a.message }), h("small", { text: `${({integration_github:"GitHub",integration_clickup:"ClickUp",integration_claude:"Claude Code",claudeCode:"Claude Code",codex:"Codex",integration_calcom:"Cal.com"} as Record<string,string>)[a.source] ?? a.title} · ${relativeTime(a.time)}`,title:new Date(a.time).toLocaleString() })),
+      h("div",{class:"inbox-actions"},open,read,a.action?.kind==="session" && !State.capabilities.codexLinks ? h("button",{class:"link-btn",text:"Copy ID","data-inbox-focus":a.id+":copy",title:a.action.sessionId,onclick:(event:Event)=>void copySessionId(event.currentTarget as HTMLElement,a.action?.kind==="session" ? a.action.sessionId:null)}):null),
+      h("button", { class: "link-btn", text: "×", title: "Dismiss alert","data-inbox-focus":a.id+":dismiss", onclick: () => State.dismissAlert(a.id) })));
+    }
+    list.scrollTop=scroll;
+    if(focusKey)Array.from(list.querySelectorAll<HTMLElement>("[data-inbox-focus]")).find(el=>el.dataset.inboxFocus===focusKey)?.focus({preventScroll:true});
   }};
 }
 
@@ -548,7 +591,7 @@ export function buildViews(
   map.set("error", buildError(actions));
   map.set("finished", buildFinished(actions));
   map.set("confused", buildConfused());
-  map.set("note", buildNote());
+  map.set("note", buildNote(actions));
   map.set("settings", buildSettings(actions));
   map.set("prompt", buildPrompt(onChatHeightChange));
   map.set("upload", buildUpload());

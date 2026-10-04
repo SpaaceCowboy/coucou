@@ -3,6 +3,8 @@
 // they are served at /sounds/<name>.wav. Default volume 0.12, slider range 0–0.2,
 // exactly like the Mac player, and several sounds may overlap.
 
+import { State } from "./state";
+
 export const SOUND_NAMES = [
   "peek", "open", "close", "hover", "blip", "slap", "annoyed", "dizzy", "greet",
   "work", "finish", "error", "approval", "question", "approve", "gulp", "tick",
@@ -21,6 +23,7 @@ class SoundEngine {
   private buffers = new Map<string, AudioBuffer>();
   private loading: Promise<void> | null = null;
   private idleTimer: number | null = null;
+  private sources=new Set<AudioBufferSourceNode>();
 
   /** Creates the context and decodes every WAV. Safe to call more than once. */
   preload(): Promise<void> {
@@ -52,6 +55,7 @@ class SoundEngine {
 
   /** WebView2 can hand us a suspended context; call after any user input. */
   resume() {
+    if(State.quiet || State.paused || State.mode==="hidden" || document.hidden)return;
     if (this.idleTimer != null) {
       window.clearTimeout(this.idleTimer);
       this.idleTimer = null;
@@ -68,6 +72,11 @@ class SoundEngine {
    * would clip it — and `play()` resumes the context on its own.
    */
   idle() {
+    if(!this.enabled || State.quiet || State.paused || State.mode==="hidden" || document.hidden){
+      if(this.idleTimer!=null){window.clearTimeout(this.idleTimer);this.idleTimer=null;}
+      for(const source of this.sources){try{source.stop();}catch{}}
+      this.sources.clear();void this.ctx?.suspend();return;
+    }
     if (!this.ctx || this.ctx.state !== "running" || this.idleTimer != null) return;
     this.idleTimer = window.setTimeout(() => {
       this.idleTimer = null;
@@ -82,10 +91,11 @@ class SoundEngine {
 
   setEnabled(on: boolean) {
     this.enabled = on;
+    if(!on)this.idle();
   }
 
   play(name: SoundName | string) {
-    if (!this.enabled) return;
+    if (!this.enabled || State.quiet || State.paused || document.hidden) return;
     const ctx = this.ctx;
     const master = this.master;
     const buf = this.buffers.get(name);
@@ -98,6 +108,7 @@ class SoundEngine {
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.connect(master);
+    this.sources.add(src);src.onended=()=>{this.sources.delete(src);src.disconnect();};
     src.start();
   }
 }

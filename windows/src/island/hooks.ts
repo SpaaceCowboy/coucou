@@ -10,6 +10,7 @@ import type { Island } from "./island";
 
 import { claudeEvent, type AgentEvent, type ClaudeHookPayload } from "../core/agent-events";
 
+const playSound: typeof Sound.play = (...args) => { if (!State.quiet && !State.paused) Sound.play(...args); };
 let lastUpdate = 0;
 const settleTimers = new Map<string, number>();
 
@@ -184,9 +185,20 @@ export function handleAgentEvent(island: Island, payload: AgentEvent) {
   const projectName = aliasProjectName(raw || "Session");
   const focused = State.focusTask?.id === id;
 
+  if (name === "approval_requested" && (State.quiet || payload.terminal_fallback)) {
+    upsert(id,payload,projectName,cwd);
+    if (payload.request_id) void Bridge.approvalDecline(payload.request_id);
+    State.recordAlert(id,"approval",`${approvalTarget(payload.tool_name ?? "Tool",payload.tool_input ?? {})} · Answer in the terminal (Quiet mode).`,payload.event_id ?? payload.request_id);
+    State.updateTask(id,"question");
+    State.setPillBadge(id,"approval");
+    return;
+  }
+
   // Routine activity updates the ticker quietly. Only attention events surface.
   const attention = (view: Parameters<Island["alert"]>[0], badge: "approval" | "finished" | "error") => {
-    State.recordAlert(id, badge, payload.message || State.tasks.find(t => t.id === id)?.steps.at(-1) || (badge === "finished" ? "Task finished" : "Needs attention"));
+    State.recordAlert(id, payload.type === "waiting" || view === "question" ? "input" : badge, payload.message || State.tasks.find(t => t.id === id)?.steps.at(-1) || (badge === "finished" ? "Task finished" : "Needs attention"),payload.event_id);
+    if (State.quiet) { State.setPillBadge(id,badge); return; }
+    if (State.mode === "expanded" && ["prompt","upload","uploading","choose"].includes(State.view)) { State.setPillBadge(id,badge); return; }
     if (State.pendingApproval || (State.mode === "expanded" && State.view === "clickup")) {
       if (id !== "integration_claude") State.setPillBadge(id, badge);
       return; // Keep the existing Claude decision card available until answered.
@@ -210,7 +222,7 @@ export function handleAgentEvent(island: Island, payload: AgentEvent) {
     upsert(id, payload, projectName, cwd);
     State.updateTask(id, state);
     State.appendStep(id, payload.message || "Waiting for your input in the agent app.");
-    Sound.play(state === "ratelimit" ? "rate" : "approval");
+    playSound(state === "ratelimit" ? "rate" : "approval");
     attention("question", "approval");
   };
 
@@ -254,7 +266,7 @@ export function handleAgentEvent(island: Island, payload: AgentEvent) {
       upsert(id, payload, projectName, cwd);
       State.updateTask(id, "finished");
       if (payload.message) State.appendStep(id, payload.message.slice(0, 60));
-      Sound.play("finish");
+      playSound("finish");
       attention("finished", "finished");
       if (payload.source !== "codex") settleTimers.set(id, window.setTimeout(() => {
         settleTimers.delete(id);
@@ -268,13 +280,13 @@ export function handleAgentEvent(island: Island, payload: AgentEvent) {
       if (payload.fatal === false) {
         State.updateTask(id, "working");
         State.appendStep(id, payload.message || "⚠ failed");
-        Sound.play("error");
+        playSound("error");
         attention("error", "error");
         break;
       }
       if (payload.message) State.appendStep(id, payload.message.slice(0, 60));
       State.updateTask(id, "error");
-      Sound.play("error");
+      playSound("error");
       attention("error", "error");
       break;
 
@@ -302,12 +314,13 @@ export function handleAgentEvent(island: Island, payload: AgentEvent) {
         tool,
         command: approvalTarget(tool, input),
       };
+      State.recordAlert(id,"approval",approvalTarget(tool,input),payload.event_id ?? requestId);
       // The relay's short ack window closes in 800 ms; everything below this
       // line is synchronous, so the card really is up by the time it lands.
       if (requestId) void Bridge.approvalAck(requestId);
       State.updateTask(id, "approval");
       State.isPinned = true;
-      Sound.play("approval");
+      playSound("approval");
       if (focused) {
         island.alert("approval");
       } else {

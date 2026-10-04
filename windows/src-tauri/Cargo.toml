@@ -21,6 +21,15 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["net", "io-util", "sync", "time", "rt"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+notify = { version = "8", default-features = false }
+libc = "0.2"
+x11rb = "0.13"
+
+[target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
 windows = { version = "0.61", features = [
   "Win32_Foundation",
