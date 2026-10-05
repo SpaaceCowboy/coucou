@@ -32,6 +32,8 @@ export interface BootInfo {
 }
 
 export const Bridge = {
+  desktopNotify: (alert:{source:string;title:string;message:string}) => call<void>("desktop_notify", {alert}),
+  desktopNotificationTest: () => callOrThrow<void>("desktop_notification_test"),
   attachmentCheck:(path:string,provider:string)=>IS_TAURI ? callOrThrow<void>("attachment_check",{path,provider}) : Promise.resolve(),
   chatStatus: () => call<{configured:boolean;error?:string}>("chat_status"),
   secretStatus: (key:string) => call<{present:boolean;error:string|null}>("secret_status",{key}),
@@ -47,6 +49,7 @@ export const Bridge = {
 
   /** Shrink the window down to the invisible wake strip (hidden) or back to full. */
   setCollapsed: (collapsed: boolean) => call<void>("set_collapsed", { collapsed }),
+  setChatExpanded: (expanded:boolean) => callOrThrow<BootInfo["screen"]>("set_chat_expanded", {expanded}),
   setFloatingSize:(width:number,height:number)=>call<void>("set_floating_size",{width,height}),
 
   /**
@@ -59,7 +62,7 @@ export const Bridge = {
   /** Give the window keyboard focus (chat field) and take it away again. */
   focusWindow: (focused: boolean) => call<void>("focus_window", { focused }),
 
-  reposition: () => call<void>("reposition"),
+  reposition: () => call<BootInfo["screen"]>("reposition"),
 
   openUrl: (url: string) => call<void>("open_url", { url }),
 

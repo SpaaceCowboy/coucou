@@ -85,6 +85,8 @@ export class Island {
   private confusedRecovery: number | null = null;
   private prevViewBeforeConfused: IslandViewName = "overview";
   private lastSyncedView: IslandViewName | null = null;
+  private nativeChatExpanded=false;
+  private resizingChat=false;
 
   /** Drop sequence bookkeeping: last tick played, and whether the ✓ has fired. */
   private uploadTens = 0;
@@ -101,13 +103,20 @@ export class Island {
       if(document.hidden)Sound.idle();else{this.dirty=true;this.ensureRunning();}
     });
     this.wireFsm();
+    window.addEventListener("resize",()=>{
+      if(State.chatExpanded && !State.capabilities.floatingWindow){
+        State.chatScreenHeight=window.innerHeight;State.chatScreenWidth=Math.max(1,window.innerWidth-80);State.notify();
+      }
+      this.pushedRect={x:-1,y:-1,w:-1,h:-1};this.dirty=true;this.ensureRunning();
+    });
     this.wireInput();
     this.engine.onDizzy = () => this.handleDizzy();
     this.greeting.onComplete = () => this.fsm.greetComplete();
     State.subscribe(() => {
       if(State.quiet || State.paused)Sound.idle();
       this.dirty = true;
-      if(this.targetSize().h!==this.lastGeometryHeight)this.animateGeometry(false);
+      const size=this.targetSize();
+      if(size.h!==this.lastGeometryHeight || size.w!==this.lastGeometryWidth)this.animateGeometry(false);
       this.ensureRunning();
     });
   }
@@ -184,6 +193,7 @@ export class Island {
       },
       openSettingsWindow: () => void Bridge.openSettingsWindow(),
       blip: () => Sound.play("blip"),
+      toggleChatExpanded: () => void this.toggleChatExpanded(),
     };
 
     this.wakeStrip = h("div", { id: "wake-strip" });
@@ -278,6 +288,7 @@ export class Island {
     const prev = State.mode;
     if (mode === prev) return;
     State.mode = mode;
+    if(mode!=="expanded")State.chatExpanded=false;
     if (mode === "expanded") Sound.play("open");
     if (prev === "expanded") {
       Sound.play("close");
@@ -309,6 +320,7 @@ export class Island {
   expand(view: IslandViewName) {
     this.stopSequenceIfLeaving(view);
     State.view = view;
+    if(view!=="prompt")State.chatExpanded=false;
     if (State.mode !== "expanded") this.setMode("expanded");
     else this.animateGeometry(false);
     State.lastActivity = performance.now();
@@ -317,6 +329,7 @@ export class Island {
   }
 
   setView(view: IslandViewName) {
+    if(view!=="prompt")State.chatExpanded=false;
     this.stopSequenceIfLeaving(view);
     if (State.mode !== "expanded") {
       this.fsm.forceHome();
@@ -472,9 +485,11 @@ export class Island {
   // ── Geometry ────────────────────────────────────────────────────────────────
 
   private lastGeometryHeight=-1;
+  private lastGeometryWidth=-1;
   private lastFloatingSize="";
   private targetSize(): { w: number; h: number; r: number } {
-    const { w, h:baseHeight } = islandSize(State.mode, State.view, State.chatHistory.length);
+    const { w, h:baseHeight } = islandSize(State.mode, State.view, State.chatHistory.length,
+      State.chatExpanded ? {height:State.chatScreenHeight,width:State.chatScreenWidth}:undefined);
     const h=State.mode==="expanded" && State.view==="overview" && ["integration_clickup","integration_github"].includes(State.focusTask?.id ?? "") ? 220:baseHeight;
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };
@@ -483,6 +498,7 @@ export class Island {
   private animateGeometry(shrinking: boolean) {
     const { w, h, r } = this.targetSize();
     this.lastGeometryHeight=h;
+    this.lastGeometryWidth=w;
     if(this.reducedMotion){this.width.jump(w);this.height.jump(h);this.radius.jump(r);}
     else if (shrinking) {
       this.width.curveTowards(w);
@@ -500,6 +516,9 @@ export class Island {
     const w = this.width.value;
     const hh = this.height.value;
     const r = this.radius.value;
+    if(this.nativeChatExpanded && !State.chatExpanded && !this.width.animating && !this.height.animating && !this.resizingChat){
+      this.nativeChatExpanded=false;void Bridge.setChatExpanded(false).catch(()=>{});
+    }
     if(State.capabilities.floatingWindow && !this.width.animating && !this.height.animating){
       const key=`${Math.round(w)}:${Math.round(hh)}`;
       if(this.lastFloatingSize!==key){this.lastFloatingSize=key;void Bridge.setFloatingSize(w,hh);}
@@ -515,7 +534,7 @@ export class Island {
     this.greetingCanvas.style.left = `${(w - EXPANDED_W) / 2}px`;
     this.uploadCanvas.el.style.left = `${(w - EXPANDED_W) / 2}px`;
 
-    const rect = { x: (PANEL_W - w) / 2, y: 0, w, h: hh };
+    const rect = { x: (window.innerWidth - w) / 2, y: State.capabilities.floatingWindow ? 12:0, w, h: hh };
     const p = this.pushedRect;
     if (Math.abs(p.x - rect.x) > 0.5 || Math.abs(p.w - rect.w) > 0.5 || Math.abs(p.h - rect.h) > 0.5) {
       this.pushedRect = rect;
@@ -527,7 +546,24 @@ export class Island {
   private islandRect(): { x: number; y: number; w: number; h: number } {
     const w = this.width.value;
     const hh = this.height.value;
-    return { x: ((State.capabilities.floatingWindow || !IS_TAURI ? window.innerWidth:PANEL_W) - w) / 2, y: State.capabilities.floatingWindow ? 12:0, w, h: hh };
+    return { x: (window.innerWidth - w) / 2, y: State.capabilities.floatingWindow ? 12:0, w, h: hh };
+  }
+
+  private async toggleChatExpanded() {
+    if(State.view!=="prompt" || State.mode!=="expanded" || this.resizingChat)return;
+    if(State.chatExpanded){State.chatExpanded=false;State.notify();return;}
+    this.resizingChat=true;
+    try {
+      const display=IS_TAURI ? await Bridge.setChatExpanded(true) : {height:window.innerHeight,width:window.innerWidth};
+      this.nativeChatExpanded=IS_TAURI;
+      if(State.view!=="prompt" || State.mode!=="expanded"){
+        if(IS_TAURI)await Bridge.setChatExpanded(false);this.nativeChatExpanded=false;return;
+      }
+      State.chatScreenHeight=Math.max(1,display.height-(State.capabilities.floatingWindow ? 24:0));
+      State.chatScreenWidth=Math.max(1,display.width-(State.capabilities.floatingWindow ? 16:80));
+      State.chatExpanded=true;State.notify();
+    } catch(err){State.chatError=String(err).replace(/^Error:\s*/,"");State.notify();}
+    finally {this.resizingChat=false;}
   }
 
   // ── Window collapse (hidden → tiny wake strip, zero polling) ────────────────

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Desktop controls and notifications — 2026-10-06
+
+- Close running, completed and service pills with ×, including the focused pill; keep closed pills hidden during activity and across restarts. Restore them from the header or when a session starts a new turn. Monitoring continues and hidden Claude permissions return to the terminal.
+- Add Clear inbox with persistent dismissal of cleared events; subsequent new alerts still arrive.
+- Add a chat-only button at the top right that expands to the display's full height and 50% more width, capped to fit smaller displays. Restore the usual geometry on a second click, navigation or collapse, keeping chat content.
+- Add native Windows/Linux desktop notifications for new attention inbox events, with settings and a test button. Respect Quiet mode, Pause, service preferences, duplicate suppression and silent history restoration. Use existing Windows bindings and Linux's notify-send without a new Rust dependency.
+- Verification: frontend tests, TypeScript checks, production frontend build and browser checks of expand/restore and Clear inbox. Windows backend: 28 tests passed, 2 optional signed-in checks skipped; 3 hook tests passed. The Windows check temporarily omitted unavailable Linux dependencies and restored the exact manifest and lockfile afterward. Full cross-platform dependency resolution and Linux desktop delivery remain unverified because crates.io was unreachable.
+
 ### Repository updates — 2026-10-05
 
 - Include the existing root `AGENTS.md` project guide and Windows package-lock changes at the user's request to push all local changes. The lockfile records version `0.1.1`, updates optional-platform package metadata and marks the TypeScript peer dependency. These files were previously kept outside the implementation commit.

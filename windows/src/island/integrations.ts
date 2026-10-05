@@ -69,7 +69,7 @@ export function handleIntegration(island:Island,update:IntegrationUpdate) {
       time:event.timestamp ?? Date.now(),
       action:update.id==="integration_clickup" ? {kind:"clickup"} : event.url || OPEN_URLS[update.id]
         ? {kind:"url",url:event.url ?? OPEN_URLS[update.id]} : {kind:"settings"},
-    });
+    }, !event.silent);
     if(task && preference!=="off" && !event.silent) {
       task.state=event.success ? "finished":"error";
       task.steps=[event.label,...(event.detail ? [event.detail]:[])];task.stepIndex=task.steps.length-1;

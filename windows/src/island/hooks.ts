@@ -185,7 +185,7 @@ export function handleAgentEvent(island: Island, payload: AgentEvent) {
   const projectName = aliasProjectName(raw || "Session");
   const focused = State.focusTask?.id === id;
 
-  if (name === "approval_requested" && (State.quiet || payload.terminal_fallback)) {
+  if (name === "approval_requested" && (State.quiet || State.isPillClosed(id) || payload.terminal_fallback)) {
     upsert(id,payload,projectName,cwd);
     if (payload.request_id) void Bridge.approvalDecline(payload.request_id);
     State.recordAlert(id,"approval",`${approvalTarget(payload.tool_name ?? "Tool",payload.tool_input ?? {})} · Answer in the terminal (Quiet mode).`,payload.event_id ?? payload.request_id);
@@ -228,6 +228,7 @@ export function handleAgentEvent(island: Island, payload: AgentEvent) {
 
   switch (name) {
     case "session_started":
+      State.reopenPill(id);
       upsert(id, payload, projectName, cwd);
       if (payload.source === "codex") State.updateTask(id, "thinking");
       State.setPillBadge(id, null);

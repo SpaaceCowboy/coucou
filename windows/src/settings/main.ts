@@ -501,8 +501,17 @@ function notificationsSection():HTMLElement {
   quiet.value=settings.quietUntil===0 ? "0" : remaining>0 ? String([30,60,120].find(m=>remaining<=m*60_000) ?? 120) : "off";
   quiet.onchange=()=>{settings.quietUntil=quiet.value==="off" ? null : quiet.value==="0" ? 0 : Date.now()+Number(quiet.value)*60_000;void save();};
   const section=h("section",{},h("h2",{text:"Notifications"}),
+    h("div",{class:"row"},h("label",{text:"Desktop notifications"}),toggle(settings.desktopNotifications,v=>{settings.desktopNotifications=v;void save();},"Desktop notifications")),
     h("div",{class:"row"},h("label",{text:"Quiet mode"}),quiet),
-    h("div",{class:"hint",text:"Quiet mode keeps monitoring and saves updates in your inbox. No sounds or automatic opening. Permissions return to the terminal. Pause stops monitoring."}));
+    h("div",{class:"hint",text:"Quiet mode keeps monitoring and saves updates in your inbox. No sounds, desktop notifications or automatic opening. Permissions return to the terminal. Pause stops monitoring."}));
+  const feedback=h("div",{class:"hint","aria-live":"polite"});
+  const test=h("button",{text:"Test desktop notification",onclick:async()=>{
+    test.disabled=true;
+    try {await Bridge.desktopNotificationTest();feedback.textContent="Test sent. If it is hidden, check Coucou in your system notification settings. Windows requires an installed build.";}
+    catch(err){feedback.textContent=String(err).replace(/^Error:\s*/,"");}
+    finally {test.disabled=false;}
+  }});
+  section.append(h("div",{class:"row"},test),feedback);
   for(const def of [...INTEGRATIONS,{id:"integration_clickup",name:"ClickUp"}]) {
     const select=h("select",{"aria-label":`${def.name} notifications`}) as HTMLSelectElement;
     for(const [value,text]of [["actionable","Actionable updates"],["all","All updates"],["off","Off"]])select.append(h("option",{value,text}));

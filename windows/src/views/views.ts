@@ -34,6 +34,7 @@ export interface ViewActions {
   setAutoClose(seconds: number): void;
   openSettingsWindow(): void;
   blip(): void;
+  toggleChatExpanded(): void;
 }
 
 export interface ViewHost {
@@ -94,6 +95,8 @@ export function buildHeader(actions: ViewActions): ViewHost {
 
   const gearBtn = h("button", { title: "Settings", onclick: () => go("settings") }, svg(ICONS.gear, 14));
   const soundBtn = h("button", { title: "Mute", onclick: () => actions.toggleSound() }, svg(ICONS.speakerOn, 14));
+  const restoreBtn = h("button", {title:"Restore closed pills",text:"↶",onclick:()=>{State.restoreClosedPills();go(State.defaultView());}});
+  const expandChat=h("button",{title:"Expand chat",onclick:()=>actions.toggleChatExpanded()});
 
   function go(v: IslandViewName) {
     actions.blip();
@@ -104,13 +107,20 @@ export function buildHeader(actions: ViewActions): ViewHost {
     "div",
     { id: "header" },
     h("div", { class: "tabs" }, tabHome, tabChat, tabDrop, tabHistory),
-    h("div", { class: "header-actions" }, gearBtn, soundBtn),
+    h("div", { class: "header-actions" }, restoreBtn, gearBtn, soundBtn, expandChat),
   );
 
   return {
     el,
     sync() {
       const v = State.view;
+      restoreBtn.hidden = !State.hasClosedPills;
+      expandChat.hidden=v!=="prompt";
+      expandChat.title=State.chatExpanded ? "Restore chat size":"Expand chat to full screen height";
+      expandChat.setAttribute("aria-label",expandChat.title);
+      expandChat.setAttribute("aria-pressed",String(State.chatExpanded));
+      clear(expandChat);
+      expandChat.append(svg(State.chatExpanded ? "M4 9h5V4M15 4v5h5M20 15h-5v5M9 20v-5H4" : "M9 4H4v5M15 4h5v5M20 15v5h-5M9 20H4v-5",14,{stroke:1.7}));
       unread.textContent=State.unreadCount ? String(Math.min(99,State.unreadCount)) : "";
       tabHistory.setAttribute("aria-label",`Attention inbox, ${State.unreadCount} unread`);
       tabHome.classList.toggle("on", v === "overview" || v === "empty");
@@ -143,6 +153,12 @@ function buildOverview(actions: ViewActions): ViewHost {
     svg(ICONS.arrowUpRight, 8),
   );
   const left = card(null, leftBody, jump);
+  const closeFocus=h("button",{class:"dismiss-chat close-focus",title:"Close focused pill",text:"×",onclick:()=>{
+    const focused=State.focusTask;if(!focused)return;
+    if(focused.id==="integration_claude" && State.pendingApproval)releasePendingApproval("Pill closed");
+    State.dismissChat(focused.id);actions.setView(State.defaultView());
+  }});
+  left.append(closeFocus);
   const pills = h("div", { class: "pills" });
   const right = card(null, pills);
 
@@ -242,6 +258,9 @@ function buildOverview(actions: ViewActions): ViewHost {
       }
 
       jump.style.display = detailOpen ? "none" : "";
+      closeFocus.hidden=!task;
+      closeFocus.title=task ? `Close ${task.name} pill`:"Close focused pill";
+      closeFocus.setAttribute("aria-label",closeFocus.title);
 
       const others = State.otherTasks;
       const pillKey = others.map((t) => `${t.id}:${t.name}:${t.sessionCwd}:${t.state}:${t.pillBadge ?? ""}`).join("|");
@@ -259,14 +278,12 @@ function buildPill(task: AgentTask, actions: ViewActions): HTMLElement {
   const canvas = createMiniBot(task, 24);
   const pill = h(
     "div",
-    { class: "pill", "data-task-id":task.id, role: "button", tabindex: "0", title: task.name + (task.sessionCwd ? " · " + task.sessionCwd : ""), onclick: () => actions.setFocus(task.id), onkeydown: (event: Event) => { const e = event as KeyboardEvent; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); actions.setFocus(task.id); } } },
+    { class: "pill", "data-task-id":task.id, role: "button", tabindex: "0", title: task.name + (task.sessionCwd ? " · " + task.sessionCwd : ""), onclick: () => actions.setFocus(task.id), onkeydown: (event: Event) => { if(event.target!==event.currentTarget)return;const e = event as KeyboardEvent; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); actions.setFocus(task.id); } } },
     canvas,
     h("span", { class: "lbl" }, h("span", {text:label}),
       task.source === "codex" ? h("small",{text:task.sessionCwd?.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "Codex"}) : null),
   );
-  if (task.source === "codex" && ["finished","idle"].includes(task.state)) {
-    pill.append(h("button", { class: "dismiss-chat", title: "Dismiss chat", text: "×", onclick: (e: Event) => { e.stopPropagation(); State.dismissChat(task.id); } }));
-  }
+  pill.append(closePillButton(task,actions));
   pill.style.borderColor = `${task.color}24`;
   pill.addEventListener("mouseenter", () => {
     pill.style.background = `${task.color}2e`;
@@ -290,6 +307,15 @@ function buildPill(task: AgentTask, actions: ViewActions): HTMLElement {
     pill.append(badge);
   }
   return pill;
+}
+
+function closePillButton(task:AgentTask,actions:ViewActions):HTMLElement {
+  return h("button",{class:"dismiss-chat",title:`Close ${task.name} pill`,text:"×",onclick:(event:Event)=>{
+    event.stopPropagation();
+    if(task.id==="integration_claude" && State.pendingApproval){releasePendingApproval("Pill closed");actions.setView("overview");}
+    State.dismissChat(task.id);
+    if(["overview","finished","error","question"].includes(State.view))actions.setView(State.defaultView());
+  }});
 }
 
 function lighten(hex: string, amount: number): string {
@@ -542,9 +568,11 @@ function buildPlaceholder(title: string, sub: string): ViewHost {
 
 function buildHistory(actions: ViewActions): ViewHost {
   const list = h("div", { class: "history-list" });
+  const clearInbox=h("button",{class:"link-btn",text:"Clear inbox",title:"Clear attention inbox",onclick:()=>State.clearInbox()});
   let key = "";
   return { el: h("div", { class: "view" }, card(null, h("div", { class: "utility-body" },
-    h("div", { class: "title", text: "Attention inbox" }), list))), sync() {
+    h("div", { class: "inbox-heading" },h("div", { class: "title", text: "Attention inbox" }),clearInbox), list))), sync() {
+    clearInbox.disabled=State.recentAlerts.length===0;
     const next = State.historyStorageError + Math.floor(Date.now()/60_000) + JSON.stringify(State.recentAlerts);
     if (key === next) return; key = next;
     const scroll=list.scrollTop;

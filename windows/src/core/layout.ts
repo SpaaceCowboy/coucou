@@ -105,6 +105,7 @@ export function islandSize(
   mode: IslandMode,
   view: IslandViewName,
   chatCount = 0,
+  chatScreen?: {height:number;width:number},
 ): { w: number; h: number } {
   switch (mode) {
     case "hidden":
@@ -114,6 +115,10 @@ export function islandSize(
     case "compact":
       return { w: COMPACT_W, h: NOTCH_H };
     case "expanded": {
+      if(view === "prompt" && chatScreen) return {
+        w:Math.min(Math.round(EXPANDED_W*1.5),chatScreen.width),
+        h:chatScreen.height,
+      };
       const h = view === "prompt" ? chatPromptHeight(chatCount) : VIEW_LAYOUTS[view].height;
       return { w: EXPANDED_W, h };
     }

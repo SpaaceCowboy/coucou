@@ -6,6 +6,7 @@ mod codex;
 mod files;
 mod hooks;
 mod integrations;
+mod notifications;
 #[cfg(windows)]
 mod island;
 #[cfg(target_os="linux")]
@@ -47,6 +48,7 @@ fn attachment_check(path:String,provider:String)->Result<(),String>{files::valid
 pub struct Shared {
     pub settings: Mutex<Settings>,
     pub gate: Arc<PollGate>,
+    pub chat_expanded: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Serialize)]
@@ -127,7 +129,9 @@ fn set_island_rect(shared: State<Shared>, x: f64, y: f64, width: f64, height: f6
 fn set_floating_size(app:AppHandle,width:f64,height:f64){
     #[cfg(target_os="linux")]
     if platform::is_wayland(){if let Some(win)=island::window(&app){
-        let _=win.set_size(tauri::LogicalSize::new(width.clamp(288.0,640.0)+16.0,height.clamp(32.0,300.0)+24.0));
+        let expanded=app.state::<Shared>().chat_expanded.load(Ordering::Relaxed);
+        let screen=island::screen_info(&app,"primary");
+        let _=win.set_size(tauri::LogicalSize::new(width.clamp(288.0,if expanded{960.0}else{640.0})+16.0,height.clamp(32.0,if expanded{(screen.height-24.0).max(32.0)}else{300.0})+24.0));
     }}
     #[cfg(windows)] let _=(app,width,height);
 }
@@ -142,10 +146,25 @@ fn focus_window(app: AppHandle, focused: bool) {
 }
 
 #[tauri::command]
-fn reposition(app: AppHandle, shared: State<Shared>) {
+fn reposition(app: AppHandle, shared: State<Shared>) -> ScreenInfo {
     let pref = shared.settings.lock().unwrap().screen.clone();
     let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
     island::apply_geometry(&app, &pref, collapsed);
+    island::screen_info(&app,&pref)
+}
+
+#[tauri::command]
+fn set_chat_expanded(app: AppHandle, shared: State<Shared>, expanded: bool) -> ScreenInfo {
+    shared.chat_expanded.store(expanded, Ordering::Relaxed);
+    let pref=shared.settings.lock().unwrap().screen.clone();
+    island::apply_geometry(&app,&pref,shared.gate.collapsed.load(Ordering::Relaxed));
+    island::set_ignore_cursor(&app,false);
+    shared.gate.forget_ignore_state();
+    let screen=island::screen_info(&app,&pref);
+    if platform::is_wayland(){if let Some(win)=island::window(&app){
+        let _=win.set_size(tauri::LogicalSize::new(if expanded{976.0_f64.min(screen.width)}else{656.0},if expanded{screen.height}else{324.0}));
+    }}
+    screen
 }
 
 #[tauri::command]
@@ -440,6 +459,7 @@ pub fn run() {
         .manage(Shared {
             settings: Mutex::new(loaded.clone()),
             gate: gate.clone(),
+            chat_expanded: std::sync::atomic::AtomicBool::new(false),
         })
         .manage(Pending::default())
         .manage(Chat::default())
@@ -447,6 +467,8 @@ pub fn run() {
         .manage(clickup::Clickup::default())
         .invoke_handler(tauri::generate_handler![
             boot,
+            notifications::desktop_notify,
+            notifications::desktop_notification_test,
             clickup_setup,
             clickup_send,
             clickup_confirm,
@@ -454,6 +476,7 @@ pub fn run() {
             start_codex_monitor,
             save_settings,
             set_collapsed,
+            set_chat_expanded,
             set_island_rect,
             set_floating_size,
             focus_window,

@@ -33,6 +33,14 @@ installs for the current user only — no admin prompt.
 
 The attention inbox keeps useful service updates, input requests and connection problems on this device for up to 30 days (latest 200). Use its Open, Mark read and Dismiss actions. Saved history does not replay attention sounds or motion. Per-service notification choices in Settings default to actionable updates; routine successes keep a subtle badge.
 
+**Clear inbox** removes all saved alerts and marks them dismissed, so repeated service polls do not immediately bring them back. New alerts still arrive. Clear inbox affects Coucou only; it does not change anything in your services.
+
+Every pill has a **×**, including running chats and the focused pill. Closing it hides the pill while its session or service keeps running. Background activity does not reopen it. Use **Restore closed pills** (↶ in the header) to bring it back; a new session turn also reopens that session's pill. Closed pills stay closed across restarts. Closing a Claude permission pill returns the decision to the terminal without approving or denying it.
+
+In **Ask a quick question**, the button at the top right expands chat to the display's full height and 50% more width (960 pixels, limited by the display). Click it again to restore the normal size. Switching sections or collapsing Coucou also restores the normal size, while keeping the conversation.
+
+New attention alerts also produce native desktop notifications. **Settings → Notifications** has an on/off switch and a test button. Quiet mode, Pause, service preferences and duplicate suppression apply to these notifications too. Restoring inbox history or initial provider snapshots does not replay them. On Windows, use an installed build with its Start menu shortcut and allow Coucou in Windows notification settings. Linux uses `notify-send` from `libnotify-bin` (included as a Debian package dependency). Notification delivery is controlled by your operating system; alerts remain in the attention inbox when desktop delivery is disabled.
+
 Quiet mode can stay on until you turn it off, or last 30 minutes, one hour or two hours. Monitoring continues, while sounds and automatic opening stop. Claude permissions immediately return to the terminal. Pause is separate and stops monitoring and new network requests.
 
 Configured ClickUp shows your next three open assigned tasks in the default list, ordered by due date with undated tasks last. It refreshes directly every five minutes and on demand. The reviewed command interface remains under Ask ClickUp. GitHub focuses on mentions, assignments and review requests. Dismissal affects Coucou only; GitHub notifications require compatible classic credentials, and Coucou never replaces an existing token automatically.

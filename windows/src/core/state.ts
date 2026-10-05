@@ -109,6 +109,7 @@ export interface Settings {
   quietUntil: number | null;
   notificationPreferences: Record<string, NotificationPreference>;
   reducedMotion: boolean;
+  desktopNotifications: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -130,6 +131,7 @@ export const DEFAULT_SETTINGS: Settings = {
   quietUntil: null,
   notificationPreferences: {},
   reducedMotion: false,
+  desktopNotifications: true,
 };
 
 type Listener = () => void;
@@ -143,6 +145,8 @@ class AppState {
   recentAlerts: RecentAlert[] = [];
   historyStorageError = "";
   private dismissedEvents: string[] = [];
+  private closedPills: string[] = [];
+  pendingDesktopNotifications: InboxItem[] = [];
   capabilities = { platform:"windows", floatingWindow:false, topEdge:true, codexLinks:true, credentialStore:"Windows Credential Manager" };
   chatConfigured = false;
   chatError:string|null=null;
@@ -169,6 +173,9 @@ class AppState {
   noteMessage: string | null = null;
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
+  chatExpanded = false;
+  chatScreenHeight = 1080;
+  chatScreenWidth = 1920;
   pendingApproval: ApprovalInfo | null = null;
 
   integrations: Record<string, IntegrationInfo> = {};
@@ -198,10 +205,10 @@ class AppState {
   }
 
   get visibleTasks(): AgentTask[] {
-    const chats = this.tasks.filter(t => t.source === "codex" && !t.dismissed)
+    const chats = this.tasks.filter(t => t.source === "codex" && !t.dismissed && !this.closedPills.includes(t.id))
       .sort((a,b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
     const finished = chats.filter(t => t.state === "finished" || t.state === "idle").slice(0,5);
-    return this.tasks.filter(t => (t.source === "clickup" ? !!this.integrations[t.id]?.configured
+    return this.tasks.filter(t => !this.closedPills.includes(t.id) && (t.source === "clickup" ? !!this.integrations[t.id]?.configured
         : t.source === "codex" ? !t.dismissed && (finished.includes(t) || !["finished","idle"].includes(t.state))
         : (this.settings.showIntegrationPills && !!this.integrations[t.id]?.configured && (t.id === "integration_claude" || this.settings.activeIntegrations.includes(t.id)))
           || (t.source === "claudeCode" && (t.state !== "idle" || !!t.pillBadge || !!this.pendingApproval))))
@@ -218,7 +225,7 @@ class AppState {
     try {
       this.recentAlerts = trimInbox(this.recentAlerts);
       localStorage.setItem("coucou-sessions", JSON.stringify({
-        tasks: this.visibleTasks.filter(t => t.source === "codex").map(t => ({...t, steps:t.steps.slice(-1),stepIndex:0})), alerts: this.recentAlerts, dismissedEvents:this.dismissedEvents, connectionEvents:this.connectionEvents,
+        tasks: this.tasks.filter(t => t.source === "codex").slice(-200).map(t => ({...t, steps:t.steps.slice(-1),stepIndex:0})), alerts: this.recentAlerts, dismissedEvents:this.dismissedEvents, connectionEvents:this.connectionEvents, closedPills:this.closedPills,
       }));
       this.historyStorageError = "";
     } catch (err) { this.historyStorageError = "Recent history could not be saved. Free up local storage or dismiss older alerts."; console.error("Could not save recent chats/alerts", err); }
@@ -232,6 +239,7 @@ class AppState {
         && typeof t.name === "string" && Array.isArray(t.steps)
         && ["idle","thinking","working","question","ratelimit","error","finished"].includes(t.state)));
       this.recentAlerts = restoreInbox(saved.alerts);
+      this.closedPills = Array.isArray(saved.closedPills) ? saved.closedPills.filter((v:unknown)=>typeof v === "string").slice(-200) : [];
       this.connectionEvents = Object.fromEntries(Object.entries(saved.connectionEvents ?? {}).filter(([key,value])=>key.startsWith("integration_") && typeof value==="string")) as Record<string,string>;
       this.dismissedEvents = Array.isArray(saved.dismissedEvents) ? saved.dismissedEvents.filter((v:unknown) => typeof v === "string").slice(-200) : [];
     } catch (err) { console.error("Could not restore recent chats/alerts", err); }
@@ -242,10 +250,15 @@ class AppState {
   get unreadCount(): number { return this.recentAlerts.filter(a => !a.read).length; }
   notificationPreference(id: string): NotificationPreference { return this.settings.notificationPreferences[id] ?? "actionable"; }
 
-  recordInbox(item: Omit<InboxItem,"id"|"time"|"read"> & {time?:number}): boolean {
+  recordInbox(item: Omit<InboxItem,"id"|"time"|"read"> & {time?:number}, desktop = true): boolean {
     if (this.dismissedEvents.includes(item.source + ":" + item.eventId)) return false;
     const result = upsertInbox(this.recentAlerts, {...item,id:item.source + ":" + item.eventId,time:item.time ?? Date.now(),read:false,action:safeAction(item.action)});
     this.recentAlerts = result.items;
+    if (desktop && result.isNew && (item.time ?? Date.now()) >= Date.now()-60_000 && this.settings.desktopNotifications && !this.quiet && !this.paused
+        && this.notificationPreference(item.source) !== "off") {
+      const saved = this.recentAlerts.find(a=>a.source === item.source && a.eventId === item.eventId);
+      if (saved) this.pendingDesktopNotifications.push(saved);
+    }
     this.persistSessions(); this.notify();
     return result.isNew;
   }
@@ -289,11 +302,29 @@ class AppState {
     this.persistSessions(); this.notify();
   }
 
+  clearInbox() {
+    this.notificationRevision++;
+    this.dismissedEvents = [...new Set([...this.dismissedEvents,
+      ...this.recentAlerts.map(item=>item.source+":"+item.eventId)])].slice(-200);
+    this.recentAlerts = [];
+    this.pendingDesktopNotifications = [];
+    this.persistSessions(); this.notify();
+  }
+
   dismissChat(id: string) {
     const t = this.tasks.find(t => t.id === id);
-    if (!t || t.source !== "codex" || !["finished","idle"].includes(t.state)) return;
-    t.dismissed = true;
+    if (!t) return;
+    this.closedPills = [...this.closedPills.filter(key=>key!==id),id].slice(-200);
     if (this.focusId === id) this.focusId = null;
+    this.persistSessions(); this.notify();
+  }
+
+  get hasClosedPills(): boolean { return this.closedPills.length > 0; }
+  isPillClosed(id:string): boolean { return this.closedPills.includes(id); }
+  reopenPill(id:string) { this.closedPills = this.closedPills.filter(key=>key!==id); }
+  restoreClosedPills() {
+    for (const t of this.tasks) if (this.closedPills.includes(t.id)) t.dismissed = false;
+    this.closedPills = [];
     this.persistSessions(); this.notify();
   }
 

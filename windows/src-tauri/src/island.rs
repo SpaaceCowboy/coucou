@@ -211,7 +211,10 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     let mp = *m.position();
     let ms = *m.size();
 
-    let (lw, lh) = if collapsed { (STRIP_W, STRIP_H) } else { (PANEL_W, PANEL_H) };
+    let expanded=app.try_state::<crate::Shared>().is_some_and(|shared|shared.chat_expanded.load(Ordering::Relaxed));
+    let (lw, lh) = if collapsed { (STRIP_W, STRIP_H) }
+        else if expanded { ((960.0_f64+80.0).min(ms.width as f64/scale), ms.height as f64/scale) }
+        else { (PANEL_W, PANEL_H) };
     let pw = (lw * scale).round().max(1.0) as u32;
     let ph = (lh * scale).round().max(1.0) as u32;
     let x = mp.x + (ms.width as i32 - pw as i32) / 2;

@@ -59,6 +59,69 @@ const opened=island.opened;handleIntegration(island,{...update,event:{...update.
 State.persistSessions();const saved=JSON.parse(storage.get('coucou-sessions'));State.tasks=[];State.recentAlerts=[];State.restoreSessions();assert.equal(State.recentAlerts.length,saved.alerts.length);assert.equal(island.opened,opened,'restoration does not replay attention');
 State.settings.quietUntil=now-1;assert.equal(State.quiet,false,'expired quiet mode stops suppressing updates');
 State.paused=true;const pausedCount=State.recentAlerts.length;handleIntegration(island,{...update,event:{...update.event,eventId:'paused'}});assert.equal(State.recentAlerts.length,pausedCount);State.paused=false;
+
+// Desktop alerts follow inbox deduplication and never replay restored history.
+State.pendingDesktopNotifications=[];
+State.settings={...State.settings,desktopNotifications:true,quietUntil:null,notificationPreferences:{}};
+handleIntegration(island,{...update,event:{...update.event,eventId:'desktop-new'}});
+assert.equal(State.pendingDesktopNotifications.length,1);
+handleIntegration(island,{...update,event:{...update.event,eventId:'desktop-new'}});
+assert.equal(State.pendingDesktopNotifications.length,1,'a repeated poll produces one native alert');
+handleIntegration(island,{...update,event:{...update.event,eventId:'desktop-baseline',silent:true}});
+assert.equal(State.pendingDesktopNotifications.length,1,'baseline provider events are silent');
+State.settings.quietUntil=0;
+handleIntegration(island,{...update,event:{...update.event,eventId:'desktop-quiet'}});
+assert.equal(State.pendingDesktopNotifications.length,1,'quiet mode still records the inbox without a native alert');
+State.settings.quietUntil=null;State.settings.desktopNotifications=false;
+handleIntegration(island,{...update,event:{...update.event,eventId:'desktop-off'}});
+assert.equal(State.pendingDesktopNotifications.length,1);
+State.settings.desktopNotifications=true;
+handleIntegration(island,{...update,event:{...update.event,eventId:'desktop-old',timestamp:now-120_000}});
+assert.equal(State.pendingDesktopNotifications.length,1,'late history is not replayed as a desktop notification');
+State.pendingDesktopNotifications=[];State.persistSessions();State.restoreSessions();
+assert.equal(State.pendingDesktopNotifications.length,0);
+
+// Closing a running pill hides it across activity and restart without stopping it.
+const runningId='codex:11111111-1111-1111-1111-111111111111';
+const runningEvent={source:'codex',session_id:'11111111-1111-1111-1111-111111111111',type:'session_started'};
+handleAgentEvent(island,runningEvent);
+const runningTask=State.tasks.find(t=>t.id===runningId);
+State.focusId=runningId;State.dismissChat(runningId);
+assert.equal(runningTask.state,'thinking');assert.equal(State.focusId,null);
+assert.equal(State.visibleTasks.includes(runningTask),false);
+handleAgentEvent(island,{...runningEvent,type:'command',message:'Working'});
+assert.equal(State.visibleTasks.includes(runningTask),false,'background commands do not reopen closed active pills');
+State.persistSessions();State.tasks=[];State.restoreSessions();
+assert.ok(State.tasks.some(t=>t.id===runningId),'closed sessions are kept for restoring');
+assert.equal(State.visibleTasks.some(t=>t.id===runningId),false);
+State.restoreClosedPills();assert.ok(State.visibleTasks.some(t=>t.id===runningId));
+State.loadIntegrationTasks();State.settings.showIntegrationPills=true;
+State.integrations.integration_github={data:{},error:null,loaded:true,configured:true};
+State.dismissChat('integration_github');
+handleIntegration(island,{...update,event:null});
+assert.equal(State.visibleTasks.some(t=>t.id==='integration_github'),false,'polls do not reopen service pills');
+State.restoreClosedPills();assert.ok(State.visibleTasks.some(t=>t.id==='integration_github'));
+State.dismissChat('integration_claude');
+handleAgentEvent(island,{source:'claudeCode',type:'approval_requested',request_id:'closed-request',session_id:'closed-session',tool_name:'Write'});
+assert.equal(State.pendingApproval,null);assert.ok(calls.some(([,id])=>id==='closed-request'));
+State.restoreClosedPills();
+
+// Clearing is persistent; old provider events stay dismissed and new ones arrive.
+const clearedEvent=State.recentAlerts.find(a=>a.eventId==='desktop-new');assert.ok(clearedEvent);
+State.clearInbox();assert.equal(State.recentAlerts.length,0);assert.equal(State.pendingDesktopNotifications.length,0);
+State.restoreSessions();assert.equal(State.recentAlerts.length,0);
+handleIntegration(island,{...update,event:{...update.event,eventId:'desktop-new'}});
+assert.equal(State.recentAlerts.length,0,'Clear inbox suppresses repeats of dismissed alerts');
+handleIntegration(island,{...update,event:{...update.event,eventId:'after-clear'}});
+assert.equal(State.recentAlerts.length,1);assert.equal(State.pendingDesktopNotifications.length,1);
+
+const {islandSize,EXPANDED_W}=await import(module('core/layout.ts'));
+assert.deepEqual(islandSize('expanded','prompt',0,{height:1080,width:1920}),{w:EXPANDED_W*1.5,h:1080});
+assert.deepEqual(islandSize('expanded','prompt',0,{height:720,width:800}),{w:800,h:720},'expanded chat fits smaller screens');
+assert.deepEqual(islandSize('expanded','prompt',0),{w:640,h:240},'restore brings back normal chat dimensions');
+assert.deepEqual(islandSize('expanded','overview',0,{height:1080,width:1920}),{w:640,h:160},'other sections keep their dimensions');
+assert.deepEqual(islandSize('compact','prompt',0,{height:1080,width:1920}),{w:288,h:32});
+assert.deepEqual(islandSize('hidden','prompt',0,{height:1080,width:1920}),{w:184,h:0});
 globalThis.document={hidden:false};
 const audioSources=[];
 class FakeAudioContext{
@@ -77,4 +140,4 @@ actualSound.play('finish');assert.equal(audioSources[0].started,true);
 State.settings.quietUntil=0;actualSound.idle();assert.equal(audioSources[0].stopped,true,'quiet mode stops an existing sound immediately');
 actualSound.play('finish');assert.equal(audioSources.length,1,'quiet mode does not start another sound');
 State.settings.quietUntil=null;actualSound.play('finish');actualSound.setEnabled(false);assert.equal(audioSources[1].stopped,true,'muting stops a playing sound');
-console.log('Inbox migration, retention, deduplication, read/dismiss persistence, quiet expiry, permission fallback, service preferences and immediate audio stopping passed.');
+console.log('Inbox migration, retention, clear/dismiss persistence, active pill closing/restoration, desktop alert suppression/deduplication, expanded chat sizing, permission fallback and immediate audio stopping passed.');

@@ -38,6 +38,7 @@
           "libayatana-appindicator3-1",
           "libsecret-1-0",
           "libglib2.0-bin",
+          "libnotify-bin",
           "xdg-utils",
           "gnome-keyring"
         ],

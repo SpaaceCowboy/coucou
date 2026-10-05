@@ -34,7 +34,11 @@ pub struct Settings {
     pub notification_preferences: std::collections::HashMap<String, String>,
     #[serde(default)]
     pub reduced_motion: bool,
+    #[serde(default = "default_desktop_notifications")]
+    pub desktop_notifications: bool,
 }
+
+fn default_desktop_notifications() -> bool { true }
 
 fn default_chat_provider() -> String { "codex".into() }
 
@@ -71,6 +75,7 @@ impl Default for Settings {
             quiet_until: None,
             notification_preferences: Default::default(),
             reduced_motion: false,
+            desktop_notifications: true,
         }
     }
 }
@@ -129,13 +134,14 @@ mod tests {
         let object = value.as_object_mut().unwrap();
         object.remove("chatProvider");
         object.remove("showIntegrationPills"); object.remove("clickupWorkspace"); object.remove("clickupList");
-        object.remove("quietUntil");object.remove("notificationPreferences");object.remove("reducedMotion");
+        object.remove("quietUntil");object.remove("notificationPreferences");object.remove("reducedMotion");object.remove("desktopNotifications");
         object.insert("soundVolume".into(),serde_json::json!(0.07));
         let loaded: Settings = serde_json::from_value(value).unwrap();
         assert_eq!(loaded.sound_volume,0.07); assert!(!loaded.show_integration_pills);
         assert_eq!(loaded.chat_provider,"codex");
         assert!(loaded.clickup_list.is_empty()); assert_eq!(loaded.active_integrations.len(),4);
         assert_eq!(loaded.quiet_until,None);assert!(loaded.notification_preferences.is_empty());assert!(!loaded.reduced_motion);
+        assert!(loaded.desktop_notifications);
     }
 
     #[test]

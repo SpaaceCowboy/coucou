@@ -101,6 +101,8 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     let screen = screen_info(app, pref);
     let (w, h) = if collapsed {
         (240.0, 6.0)
+    } else if app.try_state::<crate::Shared>().is_some_and(|shared|shared.chat_expanded.load(Ordering::Relaxed)) {
+        (1040.0_f64.min(screen.width),screen.height)
     } else {
         (PANEL_W, PANEL_H)
     };

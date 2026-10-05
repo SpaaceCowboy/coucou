@@ -21,9 +21,15 @@ async function main() {
   if (boot) {
     State.settings = { ...State.settings, ...boot.settings };
     State.capabilities = boot.capabilities;
+    State.chatScreenHeight=boot.screen.height;
+    State.chatScreenWidth=boot.screen.width;
     document.body.classList.toggle("floating-window",boot.capabilities.floatingWindow);
   }
   island.applySettings();
+  State.subscribe(()=>{
+    const alerts=State.pendingDesktopNotifications.splice(0);
+    for(const alert of alerts) void Bridge.desktopNotify({source:alert.source,title:alert.title,message:alert.message});
+  });
   State.restoreSessions();
   State.loadIntegrationTasks();
   let maintenance:number|undefined;
@@ -80,7 +86,9 @@ async function main() {
     }
   });
 
-  await onEvent<null>("screen-changed", () => void Bridge.reposition());
+  await onEvent<null>("screen-changed", () => void Bridge.reposition().then(screen=>{
+    if(screen){State.chatScreenHeight=screen.height-(State.capabilities.floatingWindow ? 24:0);State.chatScreenWidth=screen.width-(State.capabilities.floatingWindow ? 16:80);State.notify();}
+  }));
 
   // The settings window writes preferences; apply them here without a restart.
   await onEvent<Settings>("settings-changed", (s) => {
