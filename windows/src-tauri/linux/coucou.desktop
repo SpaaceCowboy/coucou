@@ -5,6 +5,6 @@ Comment=Quick questions and calm service updates with Mochi
 Exec=coucou --show
 Icon=coucou
 Terminal=false
-Categories=Utility;Development;
+Categories=Utility;
 StartupNotify=true
 StartupWMClass=coucou
