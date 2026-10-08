@@ -4,8 +4,8 @@
 import { Tracked, Spring, clamp } from "../core/anim";
 import { Bridge, IS_TAURI, onDragDrop } from "../core/bridge";
 import {
-  EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
-  ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
+  EXPANDED_CORNER, EXPANDED_W, NOTCH_W,
+  ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition,
   islandSize,
   type IslandMode, type IslandViewName,
 } from "../core/layout";
@@ -525,7 +525,7 @@ export class Island {
     }
     this.islandEl.style.width = `${w}px`;
     this.islandEl.style.height = `${hh}px`;
-    this.islandEl.style.borderRadius = State.capabilities.floatingWindow ? `${r}px` : `0 0 ${r}px ${r}px`;
+    this.islandEl.style.borderRadius = State.capabilities.floatingWindow && !State.capabilities.topEdge ? `${r}px` : `0 0 ${r}px ${r}px`;
     this.islandEl.style.transform = `translateX(-50%)`;
     // These follow the island as it resizes, so they belong here rather than in
     // the state-driven DOM sync.
@@ -534,7 +534,7 @@ export class Island {
     this.greetingCanvas.style.left = `${(w - EXPANDED_W) / 2}px`;
     this.uploadCanvas.el.style.left = `${(w - EXPANDED_W) / 2}px`;
 
-    const rect = { x: (window.innerWidth - w) / 2, y: State.capabilities.floatingWindow ? 12:0, w, h: hh };
+    const rect = { x: (window.innerWidth - w) / 2, y: State.capabilities.floatingWindow && !State.capabilities.topEdge ? 12:0, w, h: hh };
     const p = this.pushedRect;
     if (Math.abs(p.x - rect.x) > 0.5 || Math.abs(p.w - rect.w) > 0.5 || Math.abs(p.h - rect.h) > 0.5) {
       this.pushedRect = rect;
@@ -546,7 +546,7 @@ export class Island {
   private islandRect(): { x: number; y: number; w: number; h: number } {
     const w = this.width.value;
     const hh = this.height.value;
-    return { x: (window.innerWidth - w) / 2, y: State.capabilities.floatingWindow ? 12:0, w, h: hh };
+    return { x: (window.innerWidth - w) / 2, y: State.capabilities.floatingWindow && !State.capabilities.topEdge ? 12:0, w, h: hh };
   }
 
   private async toggleChatExpanded() {
@@ -955,13 +955,4 @@ export class Island {
     Sound.setVolume(State.settings.soundVolume);
     this.fsm.homeToPetitDelay = State.settings.autoCloseInterval;
     State.notify();
-  }
-
-  get panelSize() {
-    return { w: PANEL_W, h: PANEL_H };
-  }
-
-  get chatHeight() {
-    return chatPromptHeight(State.chatHistory.length);
-  }
-}
+  }}

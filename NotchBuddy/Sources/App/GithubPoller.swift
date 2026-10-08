@@ -7,11 +7,7 @@ final class GithubPoller: @unchecked Sendable {
 
     func start() {
         guard timer == nil else { return }
-        let t = DispatchSource.makeTimerSource(queue: .global(qos: .background))
-        t.schedule(deadline: .now() + 7, repeating: 300)  // every 5 minutes
-        t.setEventHandler { [weak self] in self?.poll() }
-        t.resume()
-        timer = t
+        timer = startPolling(after: 7, every: 300) { [weak self] in self?.poll() }  // every 5 minutes
     }
 
     private func poll() {

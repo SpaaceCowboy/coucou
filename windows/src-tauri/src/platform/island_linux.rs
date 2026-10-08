@@ -94,8 +94,14 @@ pub fn make_non_activating(win: &WebviewWindow) {
 pub fn set_activating(_win: &WebviewWindow, _focused: bool) {}
 pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     let Some(win) = window(app) else { return };
-    if crate::platform::is_wayland() {
-        // The frontend sizes the compact window; the compositor owns placement.
+    if crate::platform::floating_window() {
+        // The frontend sizes the panel; retain placement when reopening.
+        if crate::platform::opaque_window() {
+            let result = if collapsed { win.hide() } else { win.show() };
+            if let Err(error) = result {
+                crate::log::line(format!("Floating window visibility failed: {error}"));
+            }
+        }
         return;
     }
     let screen = screen_info(app, pref);
@@ -113,14 +119,14 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     ));
 }
 pub fn set_ignore_cursor(app: &AppHandle, ignore: bool) {
-    if !crate::platform::is_wayland() {
+    if !crate::platform::floating_window() {
         if let Some(win) = window(app) {
             let _ = win.set_ignore_cursor_events(ignore);
         }
     }
 }
 pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
-    if crate::platform::is_wayland() {
+    if crate::platform::floating_window() {
         return;
     } // DOM pointer events; no background polling.
     std::thread::spawn(move || {

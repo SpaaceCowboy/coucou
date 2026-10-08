@@ -20,3 +20,11 @@ fn executable_search_checks_unix_permissions() {
     }
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn opaque_window_override_and_detection() {
+    assert!(super::opaque_window_choice(None, true));
+    assert!(!super::opaque_window_choice(None, false));
+    assert!(super::opaque_window_choice(Some("1"), false));
+    assert!(!super::opaque_window_choice(Some("0"), true));
+}

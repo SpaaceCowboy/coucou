@@ -22,15 +22,13 @@ pub fn chat_url(session_id: &str) -> Option<String> {
     valid.then(|| format!("codex://threads/{session_id}"))
 }
 
-pub fn home() -> Option<PathBuf> {
-    std::env::var_os("CODEX_HOME").map(PathBuf::from).or_else(|| {
-        Some(crate::platform::home().join(".codex"))
-    })
+pub fn home() -> PathBuf {
+    std::env::var_os("CODEX_HOME").map(PathBuf::from).unwrap_or_else(|| crate::platform::home().join(".codex"))
 }
 
 pub fn start(app: AppHandle, session_ids: Vec<String>) {
     if STARTED.swap(true, Ordering::Relaxed) { return; }
-    let Some(home) = home() else { return };
+    let home = home();
     std::thread::spawn(move || {
         let restore: HashSet<String> = session_ids.into_iter().collect();
         let root = home.join("sessions");

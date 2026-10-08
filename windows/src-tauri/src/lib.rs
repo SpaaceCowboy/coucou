@@ -125,13 +125,44 @@ fn set_island_rect(shared: State<Shared>, x: f64, y: f64, width: f64, height: f6
     shared.gate.set_rect(island::IslandRect { x, y, w: width, h: height });
 }
 
+#[cfg(target_os = "linux")]
+fn resize_floating_window(win: &tauri::WebviewWindow, size: tauri::LogicalSize<f64>) {
+    // GtkFixed children contribute their requested size to the parent's minimum.
+    // Shrink the webview first or GTK refuses to shrink the native window.
+    let webview: &tauri::Webview = win.as_ref();
+    // Manual sizing owns both surfaces; proportional autoresize would shrink the
+    // webview a second time when the parent receives its resize event.
+    if let Err(error) = webview.set_auto_resize(false) {
+        log::line(format!("Floating webview autoresize configuration failed: {error}"));
+        return;
+    }
+    if let Err(error) = webview.set_size(size) {
+        log::line(format!("Floating webview resize failed: {error}"));
+        return;
+    }
+    if let Err(error) = win.set_size(size) {
+        log::line(format!("Floating window resize failed: {error}"));
+    }
+    if !platform::is_wayland() {
+        let screen = island::screen_info(win.app_handle(), "primary");
+        if let Err(error) = win.set_position(tauri::LogicalPosition::new(
+            screen.x + (screen.width - size.width) / 2.0, screen.y,
+        )) {
+            log::line(format!("Opaque island positioning failed: {error}"));
+        }
+    }
+}
+
 #[tauri::command]
 fn set_floating_size(app:AppHandle,width:f64,height:f64){
     #[cfg(target_os="linux")]
-    if platform::is_wayland(){if let Some(win)=island::window(&app){
+    if platform::floating_window(){if let Some(win)=island::window(&app){
         let expanded=app.state::<Shared>().chat_expanded.load(Ordering::Relaxed);
         let screen=island::screen_info(&app,"primary");
-        let _=win.set_size(tauri::LogicalSize::new(width.clamp(288.0,if expanded{960.0}else{640.0})+16.0,height.clamp(32.0,if expanded{(screen.height-24.0).max(32.0)}else{300.0})+24.0));
+        let pinned = platform::opaque_window() && !platform::is_wayland();
+        let (horizontal_padding, vertical_padding) = if pinned { (0.0, 0.0) } else { (16.0, 24.0) };
+        let size = tauri::LogicalSize::new(width.clamp(288.0,if expanded{960.0}else{640.0})+horizontal_padding,height.clamp(32.0,if expanded{(screen.height-vertical_padding).max(32.0)}else{300.0})+vertical_padding);
+        resize_floating_window(&win, size);
     }}
     #[cfg(windows)] let _=(app,width,height);
 }
@@ -161,8 +192,8 @@ fn set_chat_expanded(app: AppHandle, shared: State<Shared>, expanded: bool) -> S
     island::set_ignore_cursor(&app,false);
     shared.gate.forget_ignore_state();
     let screen=island::screen_info(&app,&pref);
-    if platform::is_wayland(){if let Some(win)=island::window(&app){
-        let _=win.set_size(tauri::LogicalSize::new(if expanded{976.0_f64.min(screen.width)}else{656.0},if expanded{screen.height}else{324.0}));
+    if platform::floating_window(){if let Some(win)=island::window(&app){
+        resize_floating_window(&win, tauri::LogicalSize::new(if expanded{976.0_f64.min(screen.width)}else{656.0},if expanded{screen.height}else{324.0}));
     }}
     screen
 }
@@ -447,6 +478,21 @@ fn open_settings_window(app: AppHandle) {
 }
 
 pub fn run() {
+    let mut context = tauri::generate_context!();
+    #[cfg(target_os = "linux")]
+    if platform::opaque_window() {
+        // Must precede native window creation; changing CSS alone cannot fix alpha compositing.
+        for window in &mut context.config_mut().app.windows {
+            if window.label == island::WINDOW_LABEL {
+                window.transparent = false;
+                window.decorations = platform::is_wayland();
+            }
+        }
+        // Respect an explicit renderer override, otherwise avoid the NVIDIA GBM failure.
+        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+    }
     let loaded = settings::load();
     let gate = Arc::new(PollGate::new());
 
@@ -537,6 +583,6 @@ pub fn run() {
             integrations::start(handle.clone());
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running Coucou");
 }

@@ -8,6 +8,7 @@ use std::process::Command;
 pub struct Capabilities {
     pub platform: &'static str,
     pub floating_window: bool,
+    pub opaque_window: bool,
     pub top_edge: bool,
     pub codex_links: bool,
     pub credential_store: &'static str,
@@ -19,10 +20,34 @@ pub fn is_wayland() -> bool {
             || std::env::var_os("WAYLAND_DISPLAY").is_some())
 }
 
+// Cache the startup choice so native geometry and frontend capabilities agree.
+pub fn opaque_window() -> bool {
+    static OPAQUE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OPAQUE.get_or_init(|| {
+        cfg!(target_os = "linux") && opaque_window_choice(
+            std::env::var("COUCOU_OPAQUE_WINDOW").ok().as_deref(),
+            std::path::Path::new("/proc/driver/nvidia/version").exists(),
+        )
+    })
+}
+
+fn opaque_window_choice(setting: Option<&str>, nvidia: bool) -> bool {
+    match setting {
+        Some("1") => true,
+        Some("0") => false,
+        _ => nvidia,
+    }
+}
+
+pub fn floating_window() -> bool {
+    is_wayland() || opaque_window()
+}
+
 pub fn capabilities() -> Capabilities {
     Capabilities {
         platform: if cfg!(windows) { "windows" } else { "linux" },
-        floating_window: is_wayland(),
+        floating_window: floating_window(),
+        opaque_window: opaque_window(),
         top_edge: !is_wayland(),
         codex_links: codex_link_available(),
         credential_store: if cfg!(windows) {

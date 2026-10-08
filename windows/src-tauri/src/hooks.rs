@@ -58,10 +58,8 @@ pub struct HookPreview {
     pub fingerprint: String,
 }
 
-fn home()->PathBuf{crate::platform::home()}
-
 pub fn settings_path() -> PathBuf {
-    home().join(".claude").join("settings.json")
+    crate::platform::home().join(".claude").join("settings.json")
 }
 
 /// Reads `~/.claude/settings.json`.

@@ -14,11 +14,7 @@ final class N8nPoller: @unchecked Sendable {
 
     func start() {
         guard timer == nil else { return }
-        let t = DispatchSource.makeTimerSource(queue: .global(qos: .background))
-        t.schedule(deadline: .now() + 3, repeating: 15)
-        t.setEventHandler { [weak self] in self?.poll() }
-        t.resume()
-        timer = t
+        timer = startPolling(after: 3, every: 15) { [weak self] in self?.poll() }
     }
 
     // MARK: - Poll list endpoint

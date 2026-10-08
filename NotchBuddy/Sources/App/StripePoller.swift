@@ -1,6 +1,16 @@
 import Foundation
 import SwiftUI
 
+/// Background timer shared by every integration poller.
+func startPolling(after delay: Double, every interval: Double,
+                  _ poll: @escaping @Sendable () -> Void) -> DispatchSourceTimer {
+    let t = DispatchSource.makeTimerSource(queue: .global(qos: .background))
+    t.schedule(deadline: .now() + delay, repeating: interval)
+    t.setEventHandler(handler: poll)
+    t.resume()
+    return t
+}
+
 // MARK: - StripePoller
 // Polls Stripe API every 30s for balance + recent charges.
 // On new charge: slides payments list (newest first), then animates balance count-up.
@@ -14,11 +24,7 @@ final class StripePoller: @unchecked Sendable {
 
     func start() {
         guard timer == nil else { return }
-        let t = DispatchSource.makeTimerSource(queue: .global(qos: .background))
-        t.schedule(deadline: .now() + 6, repeating: 30)
-        t.setEventHandler { [weak self] in self?.poll() }
-        t.resume()
-        timer = t
+        timer = startPolling(after: 6, every: 30) { [weak self] in self?.poll() }
     }
 
     // MARK: - Poll

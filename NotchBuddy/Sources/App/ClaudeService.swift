@@ -115,10 +115,6 @@ final class ClaudeService {
     // Multi-turn conversation messages (for API)
     private var conversationMessages: [[String: Any]] = []
 
-    func clearConversation() {
-        conversationMessages = []
-    }
-
     private let systemPrompt = """
     You are Mochi, Louis's personal AI assistant embedded in the notch of his Mac. \
     You have web search access and can help with absolutely anything — research, coding, finding places, recommendations, tasks, questions. \

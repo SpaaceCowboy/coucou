@@ -50,3 +50,9 @@ Run the following separately in **GNOME Wayland** and **GNOME on X11**, using a 
 Local verification on the Windows development host cannot certify Debian: it has no Debian GNOME environment, and the new Linux dependencies could not be fetched from crates.io. The full dependency lock update and GNOME tests are therefore pending an online Debian build. Do not publish the `.deb` before those checks pass.
 
 References: [Tauri Debian packaging](https://v2.tauri.app/distribute/debian/), [Tauri window limitations](https://docs.rs/tauri-runtime-wry/latest/tauri_runtime_wry/struct.Window.html), [Debian 13 WebKit dependencies](https://packages.debian.org/trixie/libwebkit2gtk-4.1-0).
+
+## NVIDIA compatibility
+
+When the proprietary NVIDIA driver is detected through `/proc/driver/nvidia/version`, Coucou uses an opaque window fitted to the compact or expanded panel. On X11 it remains pinned at the top centre without a title bar; on Wayland it retains native controls and compositor placement. No background pointer polling is needed. The DMA-BUF renderer is disabled unless explicitly configured already. This avoids the fragmented transparent WebKitGTK rendering seen on NVIDIA/X11.
+
+Force this mode with `COUCOU_OPAQUE_WINDOW=1 coucou --show`; opt back into the transparent island with `COUCOU_OPAQUE_WINDOW=0 coucou --show`. Fully quit before switching. Rebuild normally without the temporary `/tmp/coucou-opaque.json` diagnostic override.

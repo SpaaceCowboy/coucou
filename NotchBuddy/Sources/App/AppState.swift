@@ -223,14 +223,6 @@ final class AppState: ObservableObject {
 
     // MARK: - Task management
 
-    func addTask(_ task: AgentTask) {
-        guard !tasks.contains(where: { $0.id == task.id }) else { return }
-        tasks.append(task)
-        if focusId == nil { focusId = task.id }
-        syncMode()
-        syncView()
-    }
-
     func removeTask(id: String) {
         tasks.removeAll { $0.id == id }
         if focusId == id { focusId = tasks.first?.id }

@@ -7,11 +7,7 @@ final class CalcomPoller: @unchecked Sendable {
 
     func start() {
         guard timer == nil else { return }
-        let t = DispatchSource.makeTimerSource(queue: .global(qos: .background))
-        t.schedule(deadline: .now() + 8, repeating: 300)
-        t.setEventHandler { [weak self] in self?.poll() }
-        t.resume()
-        timer = t
+        timer = startPolling(after: 8, every: 300) { [weak self] in self?.poll() }
     }
 
     func pollNow() { poll() }

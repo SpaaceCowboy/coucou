@@ -75,11 +75,6 @@ export const INTEGRATION_AGENTS: AgentTask[] = [
   task("integration_stripe", "Stripe", "#0570DE", "n8n"),
 ];
 
-export const TOGGLEABLE_INTEGRATION_IDS = [
-  "integration_resend", "integration_n8n", "integration_vercel", "integration_github",
-  "integration_notion", "integration_calcom", "integration_stripe",
-];
-
 /** What an integration poller last reported. */
 export interface IntegrationInfo {
   data: Record<string, unknown>;
@@ -147,7 +142,7 @@ class AppState {
   private dismissedEvents: string[] = [];
   private closedPills: string[] = [];
   pendingDesktopNotifications: InboxItem[] = [];
-  capabilities = { platform:"windows", floatingWindow:false, topEdge:true, codexLinks:true, credentialStore:"Windows Credential Manager" };
+  capabilities = { platform:"windows", opaqueWindow:false, floatingWindow:false, topEdge:true, codexLinks:true, credentialStore:"Windows Credential Manager" };
   chatConfigured = false;
   chatError:string|null=null;
   chatLastSuccess:number|null=null;
@@ -390,19 +385,6 @@ class AppState {
       this.tasks.push(task("integration_clickup", "ClickUp", "#AF78FF", "clickup"));
     if (!this.visibleTasks.some(t => t.id === this.focusId)) this.focusId = this.visibleTasks[0]?.id ?? null;
     this.notify();
-  }
-
-  toggleIntegration(id: string) {
-    if (id === "integration_claude") return;
-    const active = this.settings.activeIntegrations;
-    if (active.includes(id)) {
-      this.settings.activeIntegrations = active.filter((x) => x !== id);
-      if (this.focusId === id) this.focusId = "integration_claude";
-    } else {
-      if (active.length >= 4) return;
-      this.settings.activeIntegrations = [...active, id];
-    }
-    this.loadIntegrationTasks();
   }
 
   defaultView(): IslandViewName {

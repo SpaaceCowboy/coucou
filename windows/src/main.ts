@@ -24,6 +24,8 @@ async function main() {
     State.chatScreenHeight=boot.screen.height;
     State.chatScreenWidth=boot.screen.width;
     document.body.classList.toggle("floating-window",boot.capabilities.floatingWindow);
+    document.body.classList.toggle("opaque-window",boot.capabilities.opaqueWindow);
+    document.body.classList.toggle("opaque-top-edge",boot.capabilities.opaqueWindow && boot.capabilities.topEdge);
   }
   island.applySettings();
   State.subscribe(()=>{

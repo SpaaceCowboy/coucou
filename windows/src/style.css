@@ -1454,3 +1454,8 @@ body.is-hidden *, body.is-minimized *, .view:not(.on) * { animation-play-state:p
 .floating-window #island::before,.floating-window #island::after { display:none; }
 .reduce-motion *, .reduce-motion *::before, .reduce-motion *::after { animation:none !important; transition:none !important; scroll-behavior:auto !important; }
 @media (prefers-reduced-motion:reduce) { *,*::before,*::after { animation:none !important; transition:none !important; scroll-behavior:auto !important; } }
+
+/* Native opaque fallback keeps the same island inside a fitted window. */
+body.opaque-window { background: #000; }
+
+body.opaque-top-edge #island { top: 0; border-radius: 0 0 14px 14px; }

@@ -19,11 +19,7 @@ final class IslandWindowController: NSWindowController {
     // Confused recovery timer (set by handleDizzy)
     private var confusedRecoveryTimer: DispatchWorkItem?
 
-    // Finished-pin timer
-    private var finishedPinTimer: DispatchWorkItem?
-
     // Bot-head hover (love emote — mirrors prototype botHover())
-    private var hoverTimer: DispatchWorkItem?
     private var botHoverTimer: DispatchWorkItem?
     private var botHovering: Bool = false
     private var lastLoveTime: Double = 0
@@ -308,13 +304,6 @@ final class IslandWindowController: NSWindowController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.9, execute: item)
     }
 
-    private func scheduleHover(after delay: TimeInterval, action: @escaping () -> Void) {
-        hoverTimer?.cancel()
-        let item = DispatchWorkItem(block: action)
-        hoverTimer = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
-    }
-
     // MARK: - Mode transitions
 
     private func modeLevel(_ m: IslandMode) -> Int {
@@ -345,7 +334,6 @@ final class IslandWindowController: NSWindowController {
 
     func collapse() {
         state.isPinned = false
-        finishedPinTimer?.cancel()
         // Keep the FSM in step with what is on screen (home/coucou → petit now).
         fsm.collapse()
         setMode(.compact)
@@ -396,7 +384,6 @@ final class IslandWindowController: NSWindowController {
             MainActor.assumeIsolated {
                 guard self.wasInIsland else { return }
                 self.pendingIslandClick = true
-                self.hoverTimer?.cancel()
                 self.botHoverTimer?.cancel()
                 self.botHovering = false
                 // Drag only starts when clicking directly on the bot head
@@ -688,32 +675,6 @@ final class IslandWindowController: NSWindowController {
 
     func defaultView() -> IslandView {
         state.tasks.isEmpty ? .empty : .overview
-    }
-
-    func baseMode() -> IslandMode {
-        guard state.isPresent else { return .hidden }
-        return state.tasks.isEmpty ? .hidden : .compact
-    }
-
-    // MARK: - Activity reset (call on any user interaction in island)
-
-    func resetActivity() {
-        state.lastActivity = .now
-    }
-
-    // MARK: - Finished task pin (5.2s)
-
-    func pinForFinished(taskId: String) {
-        state.isPinned = true
-        finishedPinTimer?.cancel()
-        let item = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.state.removeTask(id: taskId)
-            self.state.isPinned = false
-            self.collapse()
-        }
-        finishedPinTimer = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5.2, execute: item)
     }
 
     // MARK: - Dizzy recovery (triggered by BotEngine.slap via .botDizzy)

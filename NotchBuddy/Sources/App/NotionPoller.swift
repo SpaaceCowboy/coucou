@@ -7,14 +7,8 @@ final class NotionPoller: @unchecked Sendable {
 
     func start() {
         guard timer == nil else { return }
-        let t = DispatchSource.makeTimerSource(queue: .global(qos: .background))
-        t.schedule(deadline: .now() + 9, repeating: 300)
-        t.setEventHandler { [weak self] in self?.poll() }
-        t.resume()
-        timer = t
+        timer = startPolling(after: 9, every: 300) { [weak self] in self?.poll() }
     }
-
-    func pollNow() { poll() }
 
     private func poll() {
         guard let token = KeychainStore.shared.get("notion-api-key") else { return }

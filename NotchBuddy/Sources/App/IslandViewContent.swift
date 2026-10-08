@@ -2365,28 +2365,6 @@ struct PillBadgeView: View {
     }
 }
 
-// MARK: - Column agents (right side of non-overview views)
-
-struct ColumnAgentsView: View {
-    @ObservedObject var state: AppState
-
-    var others: [AgentTask] {
-        state.tasks.filter { $0.id != state.focusId }
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            ForEach(Array(others.prefix(4).enumerated()), id: \.1.id) { idx, task in
-                MiniBotCanvasView(task: task)
-                    .frame(width: 16 / 0.6, height: 16 / 0.6)
-                    .frame(width: 16, height: 16)
-                    .position(x: 0, y: CGFloat(50 + idx * 24))
-                    .animation(.spring(response: 0.5, dampingFraction: 0.72).delay(Double(idx) * 0.035), value: idx)
-            }
-        }
-    }
-}
-
 // MARK: - Card background
 
 struct CardBackground<Content: View>: View {
@@ -2580,28 +2558,6 @@ struct ShimmeringText: View {
     }
 }
 
-struct ShimmerOverlay: View {
-    @State private var phase: CGFloat = 0.0
-
-    var body: some View {
-        LinearGradient(
-            stops: [
-                // Clamp all locations to [0,1] and keep them ordered
-                .init(color: .clear,                   location: max(0, phase - 0.3)),
-                .init(color: Color.white.opacity(0.6), location: max(0, min(1, phase))),
-                .init(color: .clear,                   location: min(1, phase + 0.3))
-            ],
-            startPoint: .leading, endPoint: .trailing
-        )
-        .blendMode(.overlay)
-        .onAppear {
-            withAnimation(.linear(duration: 2.2).repeatForever(autoreverses: false)) {
-                phase = 1.3  // travels left→right, exits right edge cleanly
-            }
-        }
-    }
-}
-
 // MARK: - Button styles
 
 struct PrimaryButton: View {
@@ -2659,16 +2615,6 @@ struct SecondaryButton: View {
             .clipShape(Capsule())
         }
         .buttonStyle(.plain)
-    }
-}
-
-struct IconButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .frame(width: 28, height: 28)
-            .background(Color.white.opacity(0.08))
-            .clipShape(Circle())
-            .scaleEffect(configuration.isPressed ? 0.94 : 1)
     }
 }
 

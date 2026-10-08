@@ -5,9 +5,10 @@
 // the file being sucked in. The island's own Mochi is hidden for the duration,
 // exactly as on macOS, because this canvas draws its own.
 
+import { lerp } from "../core/anim";
 import { State } from "../core/state";
 import {
-  USC, eIn, eInOut, eOut, lerp, progressAt,
+  USC, eIn, eInOut, eOut, progressAt,
   type UploadEyeShape, type UploadFrame,
 } from "./sequence";
 

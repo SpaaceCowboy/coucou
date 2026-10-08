@@ -109,22 +109,6 @@ enum IslandConst {
         .greeting:  ViewLayout(height: 150, botX: 320, botY: 90,  botDiameter: 0,  agentMode: .none),
     ]
 
-    // Project colors — keyed by lowercase display name or slug
-    static let projectColors: [String: String] = [
-        "korus":             "#FF5A4E",
-        "sbe hub":           "#2EC4A0",
-        "morning ai brief":  "#F29B38",
-        "publication ig":    "#7C5CFF",
-        "ig post":           "#7C5CFF",
-        "louisraille.fr":    "#38BDF8",
-        "louisraille":       "#38BDF8",
-        "notch buddy":       "#EC4899",
-        "notch-buddy":       "#EC4899",
-        "notchbuddy":        "#EC4899",
-    ]
-
-    static let fallbackColors = ["#22C55E", "#EAB308", "#60A5FA", "#E879F9"]
-
     // Available integration pills (matches AgentTask.integrationAgents)
     struct IntegrationMeta {
         let id: String
@@ -140,15 +124,6 @@ enum IslandConst {
         .init(id: "integration_calcom",  name: "Cal.com", color: "#C9956A"),
         .init(id: "integration_stripe",  name: "Stripe",  color: "#0570DE"),
     ]
-
-    /// Returns the fixed project color for a display name, or a stable fallback.
-    static func colorForProject(_ name: String) -> String {
-        let key = name.lowercased().trimmingCharacters(in: .whitespaces)
-        if let c = projectColors[key] { return c }
-        // partial match (e.g. "korus-api" → "korus")
-        for (k, c) in projectColors where key.hasPrefix(k) || key.contains(k) { return c }
-        return fallbackColors[abs(name.hashValue) % fallbackColors.count]
-    }
 
     // State card wash colors (radial gradient from bottom)
     static let washColors: [IslandView: String] = [

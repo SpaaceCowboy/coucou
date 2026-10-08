@@ -1,6 +1,7 @@
 // The launch "coucou" — port of GreetingCanvasView.swift.
 // Everything is laid out in the same 640×150 reference space as on macOS.
 
+import { lerp, seg } from "../core/anim";
 import { Sound } from "../core/sound";
 import { COMPACT_W, NOTCH_H, NOTCH_W } from "../core/layout";
 
@@ -29,8 +30,6 @@ const T = {
   COLLAPSE: 0.34,
 };
 
-export const GREETING_END = T.end;
-
 // ── Geometry (640×150) ────────────────────────────────────────────────────────
 
 const C0 = { x: 320, y: 90 };
@@ -57,9 +56,6 @@ const E = {
   },
 };
 
-const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
-const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
-const seg = (t: number, a: number, b: number) => clamp((t - a) / (b - a), 0, 1);
 
 // ── Pose ──────────────────────────────────────────────────────────────────────
 

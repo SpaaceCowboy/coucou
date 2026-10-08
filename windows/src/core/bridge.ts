@@ -28,7 +28,7 @@ export interface BootInfo {
   version: string;
   hookPath: string;
   showRequested?: boolean;
-  capabilities: {platform:string; floatingWindow:boolean; topEdge:boolean; codexLinks:boolean; credentialStore:string};
+  capabilities: {platform:string; opaqueWindow:boolean; floatingWindow:boolean; topEdge:boolean; codexLinks:boolean; credentialStore:string};
 }
 
 export const Bridge = {
@@ -159,12 +159,6 @@ async function callOrThrow<T>(cmd: string, args?: Record<string, unknown>): Prom
   if (!IS_TAURI) throw new Error("not running inside Coucou");
   return invoke<T>(cmd, args);
 }
-
-export type BridgeEvent =
-  | { name: "cursor"; payload: { x: number; y: number } }
-  | { name: "tray"; payload: string }
-  | { name: "hook"; payload: Record<string, unknown> }
-  | { name: "screen-changed"; payload: null };
 
 export interface DragDropPayload {
   type: "enter" | "over" | "drop" | "leave";
