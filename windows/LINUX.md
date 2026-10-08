@@ -4,7 +4,7 @@ The existing `windows/` directory contains the shared frontend and Rust workspac
 
 ## Build
 
-Install Node 22 and stable Rust, then the native dependencies:
+Install Node 22 and a current stable Rust through [rustup](https://rustup.rs), then the native dependencies. Debian's packaged rustc (1.85 on Debian 13) is too old for the committed lockfile: crates such as `icu_*` 2.3, `darling` 0.24 and `zvariant_utils` 4.2 need rustc 1.87+. A build under the distro toolchain fails the MSRV check before compiling anything, with or without `--locked`.
 
 ```sh
 sudo apt install build-essential pkg-config libssl-dev libdbus-1-dev libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libglib2.0-bin gnome-keyring xdg-utils
@@ -47,7 +47,7 @@ Run the following separately in **GNOME Wayland** and **GNOME on X11**, using a 
 - Drop an image, UTF-8 text/code, supported Claude PDF, oversized file, folder and unsupported office file. Verify editable shortcuts, language selection, explicit Send, removable attachment and Copy reply. PDFs with Codex must explain how to select Claude.
 - Check long titles, crowded pills, keyboard focus, tooltips, inbox scroll during refresh and reduced motion against `../design/prototype/notch-buddy.html` and `../design/captures/`. Check idle CPU/audio after hiding.
 
-Local verification on the Windows development host cannot certify Debian: it has no Debian GNOME environment, and the new Linux dependencies could not be fetched from crates.io. The full dependency lock update and GNOME tests are therefore pending an online Debian build. Do not publish the `.deb` before those checks pass.
+Local verification cannot certify Debian: it has no Debian GNOME environment. The dependency lock builds on the rustup toolchain and the packaging checks run in CI, but the GNOME tests remain pending a real Debian desktop. Do not publish the `.deb` before those checks pass.
 
 References: [Tauri Debian packaging](https://v2.tauri.app/distribute/debian/), [Tauri window limitations](https://docs.rs/tauri-runtime-wry/latest/tauri_runtime_wry/struct.Window.html), [Debian 13 WebKit dependencies](https://packages.debian.org/trixie/libwebkit2gtk-4.1-0).
 

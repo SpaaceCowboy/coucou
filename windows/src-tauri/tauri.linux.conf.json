@@ -33,6 +33,9 @@
     "linux": {
       "deb": {
         "section": "utils",
+        "files": {
+          "/usr/share/doc/coucou/copyright": "../../LICENSE"
+        },
         "depends": [
           "libsecret-1-0",
           "libglib2.0-bin",
