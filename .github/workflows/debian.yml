@@ -44,7 +44,7 @@ jobs:
       - name: Package and launcher smoke check
         run: |
           apt-get install -y ./target/release/bundle/deb/*.deb
-          desktop-file-validate /usr/share/applications/coucou.desktop
+          desktop-file-validate /usr/share/applications/Coucou.desktop
           test -x /usr/bin/coucou
           test -f /usr/lib/Coucou/coucou-hook || test -f /usr/lib/coucou/coucou-hook
           useradd -m -U coucou-smoke
