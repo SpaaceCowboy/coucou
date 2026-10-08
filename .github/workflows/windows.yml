@@ -52,7 +52,7 @@ jobs:
         run: |
           npm test
           npm run build
-          cargo test --workspace
+          cargo test --workspace --locked
 
       # Three files carry the version and they drift silently. Publishing a
       # "0.1.1" that installs a 0.1.0 is the kind of thing nobody notices until

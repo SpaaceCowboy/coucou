@@ -36,7 +36,7 @@ jobs:
           npx tsc --noEmit
           npm run build
       - name: Rust and Unix transport tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
       - name: Build amd64 package
         run: |
           test "$(dpkg --print-architecture)" = amd64
